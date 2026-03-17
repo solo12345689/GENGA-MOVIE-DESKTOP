@@ -1,4 +1,4 @@
-# 🎬 Genga Movie Desktop (v1.0.0)
+# 🎬 Genga Movie Desktop (v1.2.0)
 
 **Genga Movie** is a premium, standalone desktop application designed for the ultimate media discovery and playback experience. Built with a high-performance hybrid architecture, it aggregates metadata and streams from across the web—including Movies, Anime, Manga, Music, and Light Novels—into a single, stunning glassmorphic interface.
 
@@ -23,10 +23,11 @@
 ## ✨ Key Features (v1.1.6)
 
 -   **🚀 Zero-Configuration Portable Build**: Just run `GengaMovieSetup.exe`. No CLI, no `pip install`, no terminal.
+-   **✨ Professional Startup Experience**: Instant, high-quality splash screen with real-time status updates while the backend hybrid engine initializes.
 -   **📺 Definitive YouTube Fix (Error 152)**: Surgical header injection bypasses embedding restrictions, enabling seamless playback of YouTube Live streams.
--   **⚛️ Hybrid Native Engine**:
+-   **⚛️ Hybrid Native Engine (v2)**:
     *   **Python Core**: Powers MovieBox, GaanaPy (Music), and LNCrawl (Novels).
-    *   **Node Bridge**: Powers HiAnime (Anime) and Consumet/MangaPill.
+    *   **Node Bridge**: Powers AnimePahe/Gogoanime (via Consumet) and MangaPill.
 -   **📖 460+ Novel Sources**: Integrated the world-class LNCrawl engine directly into the desktop UI.
 -   **🎵 Direct Music Streaming**: High-quality regional charts and search powered by native GaanaPy.
 -   **📥 Unified Downloader**: High-speed parallel download tunneling for Movies and Series.
@@ -40,7 +41,7 @@
 | :--- | :--- |
 | **Home** | Global discovery across all media types. |
 | **MovieBox** | 4K/HD Movies and Series with native subtitle support. |
-| **Anime** | Powered by native `@genga-movie/aniwatch` library. |
+| **Anime** | Powered by high-performance `@consumet/extensions` (AnimePahe & Gogo). |
 | **Manga** | Advanced reader for MangaPill and global sources. |
 | **Music** | native GaanaPy integration for regional charts. |
 | **Novels** | Full LNCrawl integration with 460+ scrapers. |
@@ -66,9 +67,9 @@ Unlike previous web-only versions, Genga Movie Desktop runs as a 3-tier local sy
 
 1.  **The GUI (Renderer)**: Handles the premium React interface.
 2.  **The Core (Python)**: A high-performance FastAPI server packaged as `backend.exe`. It executes `moviebox-api`, `gaanapy`, and `lncrawl` natively on your CPU.
-3.  **The Bridge (Node)**: An internal `UtilityProcess` spawned by Electron that hosts native JS scrapers (`@consumet/extensions`, `@genga-movie/aniwatch`). 
+3.  **The Bridge (Node)**: An internal `UtilityProcess` spawned by Electron that hosts native JS scrapers (`@consumet/extensions`). 
 
-**Requests never touch central servers; everything is scraped from your IP, for your app.**
+**Requests never touch central servers; everything is scraped locally with advanced header masking.**
 
 ---
 
