@@ -49,44 +49,53 @@ try:
 except Exception as e:
     print(f"Warning: Could not patch GaanaPy: {e}")
 
-# --- EXTREME PATH DEFENSE ---
+# --- PATH SETUP ---
 if getattr(sys, 'frozen', False):
-    # PyInstaller extracts everything to sys._MEIPASS
+    # PyInstaller one-file build: all .py modules are compiled INTO the EXE.
+    # sys._MEIPASS is a temp directory with extracted binary dependencies (.pyd, .dll).
+    # We do NOT need to add a 'backend' subfolder; 'api' is importable directly.
     base_dir = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
     
-    # Aggressively add all possible locations to path
-    paths_to_add = [
-        base_dir,
-        os.path.join(base_dir, 'backend'),
-        os.path.join(base_dir, '_internal'),
-        os.path.join(base_dir, '_internal', 'backend')
-    ]
+    # Add _MEIPASS itself to path (for compiled binary extensions)
+    if base_dir not in sys.path:
+        sys.path.insert(0, base_dir)
     
-    for p in paths_to_add:
-        if os.path.exists(p) and p not in sys.path:
-            sys.path.insert(0, p) # Higher priority
-            
-    # CRITICAL: Debug log in home dir if things are messy
+    # Log startup info for debugging
     try:
         log_path = os.path.join(os.path.expanduser("~"), "genga_backend_debug.log")
         with open(log_path, "w") as f:
             f.write(f"Frozen: True\nMEIPASS: {base_dir}\n")
-            f.write(f"Path: {sys.path}\n")
+            f.write(f"sys.path: {sys.path}\n")
+            f.write(f"Executable: {sys.executable}\n")
     except:
         pass
 else:
     base_dir = os.path.dirname(os.path.abspath(__file__))
     if base_dir not in sys.path:
-        sys.path.append(base_dir)
+        sys.path.insert(0, base_dir)
+
+# --- IMPORT API ROUTER ---
+# In a PyInstaller one-file build, all Python modules are compiled directly
+# into the EXE and are importable via normal `import` statements.
+# DO NOT try to import from .py files on disk — they don't exist in frozen mode.
 
 try:
-    from api import router as api_router
-except ImportError as e:
-    # Final fallback for internal folder structure
+    import api
+    api_router = api.router
+    print(f"[BOOT] Successfully imported api.router")
+except Exception as e:
+    import traceback
+    print(f"[BOOT] CRITICAL: Failed to import api module: {e}")
+    traceback.print_exc()
+    # Write full traceback to debug log
     try:
-        from backend.api import router as api_router
-    except ImportError:
-        raise e
+        log_path = os.path.join(os.path.expanduser("~"), "genga_backend_debug.log")
+        with open(log_path, "a") as f:
+            f.write(f"\nFATAL IMPORT ERROR:\n")
+            traceback.print_exc(file=f)
+    except:
+        pass
+    sys.exit(1)
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -96,7 +105,7 @@ app = FastAPI(title="Genga Movie", description="API for Genga Movie Desktop App"
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for mobile app access
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -104,10 +113,47 @@ app.add_middleware(
 
 app.include_router(api_router, prefix="/api")
 
-@app.get("/")
-@app.head("/")
-async def root():
-    return {"message": "Welcome to MovieBox API"}
+# --- STATIC FILE SERVING (Serve Frontend) ---
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse
+
+# Determine frontend path
+if getattr(sys, 'frozen', False):
+    # Packaged: dist-frontend is sibling to backend/ executable in resources
+    # app/resources/backend/backend.exe
+    # app/resources/dist-frontend/index.html
+    frontend_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(sys.executable)), 'dist-frontend'))
+else:
+    # Development: d:\GENGA-MOVIE-DESKTOP\dist-frontend
+    frontend_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'dist-frontend'))
+
+print(f"Backend serving frontend from: {frontend_dir}")
+
+if os.path.exists(frontend_dir):
+    # 1. Mount the assets folder explicitly for performance
+    assets_dir = os.path.join(frontend_dir, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    
+    # 2. Catch-all route for SPA (Single Page Application)
+    # This ensures that if the user refreshes on /watch/123, the backend still serves index.html
+    @app.get("/{rest_of_path:path}")
+    async def catch_all(rest_of_path: str):
+        # If it's a direct file (like favicon.ico or logo.png), serve it
+        full_path = os.path.join(frontend_dir, rest_of_path)
+        if rest_of_path and os.path.isfile(full_path):
+            return FileResponse(full_path)
+            
+        # Otherwise, always serve index.html for React Router to handle
+        index_path = os.path.join(frontend_dir, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"error": "Frontend build files missing", "path": index_path}
+else:
+    @app.get("/")
+    @app.head("/")
+    async def root():
+        return {"message": "Welcome to Genga Movie API", "frontend_missing": True, "frontend_path": frontend_dir}
 
 @app.get("/api/health")
 @app.head("/api/health")
@@ -121,5 +167,5 @@ if __name__ == "__main__":
     import uvicorn
     # Use the app object directly to avoid uvicorn's internal string-based re-import
     # which can fail on some standalone environments.
-    uvicorn.run(app, host="127.0.0.1", port=8000, workers=1, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8000, workers=1, log_level="info")
 

@@ -156,9 +156,21 @@ function App() {
     // Auto-detect local server on mount
     useEffect(() => {
         const isDesktop = navigator.userAgent.includes('Electron');
-        // Desktop App bypasses all scanning
         if (isDesktop) {
+            // Default to localhost first so the app loads immediately
             setLocalServerURL('http://localhost:8000');
+            
+            // Try to discover real IP in background for Casting
+            fetch('http://127.0.0.1:8001/system/ip')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.ip && data.ip !== '127.0.0.1') {
+                        const url = `http://${data.ip}:8000`;
+                        setLocalServerURL(url);
+                        localStorage.setItem('moviebox_local_ip', url);
+                    }
+                })
+                .catch(() => { /* Silent fallback to localhost */ });
             return;
         }
 
@@ -187,13 +199,18 @@ function App() {
 
     // Helper to determine target base URL for a given source
     const getTargetBase = (src = activeSource) => {
-        // Electron Desktop App always uses localhost for maximum power and bypasses cloud sleep/throttling
         const isDesktop = navigator.userAgent.includes('Electron');
+        // Use the discovered real local IP (even on Desktop) so that Casting works.
+        // If the TV receives 'localhost', it won't be able to connect to the computer's backend.
+        if (localServerURL && localServerURL !== 'http://localhost:8000') {
+            return localServerURL;
+        }
+
         if (isDesktop) {
             return 'http://localhost:8000';
         }
 
-        return (src === 'hianime' || src === 'manga' || src === 'anicli' || src === 'music' || src === 'news')
+        return (src === 'animepahe' || src === 'manga' || src === 'anicli' || src === 'music' || src === 'news')
             ? CLOUD_BASE
             : localServerURL;
     };
@@ -234,7 +251,7 @@ function App() {
             try {
                 // Determine endpoint based on source
                 let endpoint = '/api/homepage';
-                if (activeSource === 'hianime') endpoint = '/api/anime/home';
+                if (activeSource === 'animepahe') endpoint = '/api/anime/home';
                 if (activeSource === 'manga') endpoint = '/api/manga/search?query=popular';
                 if (activeSource === 'novel') endpoint = '/api/novel/search?query=trending';
                 if (activeSource === 'music') endpoint = '/api/music/home';
@@ -257,7 +274,7 @@ function App() {
                             ...g,
                             items: Array.isArray(g.items) ? g.items.map(it => ({ ...it, source: 'moviebox' })) : []
                         })));
-                    } else if (activeSource === 'hianime') {
+                    } else if (activeSource === 'animepahe') {
                         setHomepageContent(Array.isArray(data) ? data : []);
                     } else if (activeSource === 'manga') {
                         const results = (data && data.results) || [];
@@ -393,7 +410,7 @@ function App() {
             let endpoint = `/api/search?query=${encodeURIComponent(query)}&content_type=${type}`;
             const base = getTargetBase(activeSource);
 
-            if (activeSource === 'hianime') {
+            if (activeSource === 'animepahe') {
                 endpoint = `/api/anime/search?query=${encodeURIComponent(query)}`;
             } else if (activeSource === 'cinecli') {
                 endpoint = `/api/cinecli/search?query=${encodeURIComponent(query)}`;
@@ -408,7 +425,7 @@ function App() {
             const res = await fetch(`${base}${endpoint}`);
             const data = await res.json();
 
-            if (activeSource === 'hianime') {
+            if (activeSource === 'animepahe') {
                 // Backend already normalizes anime results
                 const animeData = Array.isArray(data) ? data : (data?.results && Array.isArray(data.results) ? data.results : []);
                 setResults(animeData);
@@ -509,7 +526,7 @@ function App() {
         const isComplete = (it) => {
             if (!it || !it.hasFullDetails) return false;
             const s = it.source || src;
-            if (s === 'hianime') return it.animeEpisodes && it.animeEpisodes.length > 0;
+            if (s === 'animepahe') return it.animeEpisodes && it.animeEpisodes.length > 0;
             if (s === 'manga') return it.volumes && Object.keys(it.volumes).length > 0;
             if (s === 'novel') return it.volumes && Object.keys(it.volumes).length > 0;
             if (it.type === 'series' || it.type === 'anime') return it.seasons && it.seasons.length > 0;
@@ -544,7 +561,7 @@ function App() {
                 if (item.type === 'music_playlist' && data.tracks) track = data.tracks[0];
 
                 if (track && track.stream_url) {
-                    const proxyUrl = `${base}/api/proxy/download?url=${encodeURIComponent(track.stream_url)}&filename=${encodeURIComponent(track.title + (track.stream_url.includes('.m3u8') ? '.m3u8' : '.mp3'))}`;
+                    const proxyUrl = `${base}/api/proxy/download?url=${encodeURIComponent(track.stream_url)}&filename=${encodeURIComponent(track.title + (track.stream_url.includes('.m3u8') ? '.m3u8' : '.mp3'))}&source=music`;
                     window.location.href = proxyUrl;
                 }
             } catch (err) {
@@ -572,7 +589,7 @@ function App() {
 
             if (streamUrl) {
                 // 2. Redirect to Proxy Download
-                const proxyUrl = `${base}/api/proxy/download?url=${encodeURIComponent(streamUrl)}&filename=${encodeURIComponent(item.title + '.mp4')}`;
+                const proxyUrl = `${base}/api/proxy/download?url=${encodeURIComponent(streamUrl)}&filename=${encodeURIComponent(item.title + '.mp4')}&source=${item.source || activeSource}`;
                 window.location.href = proxyUrl;
             } else {
                 alert("Could not resolve a download link for this item.");
@@ -691,7 +708,7 @@ function App() {
                     const res = await fetch(`${base}/api/anicli/details/${id}`);
                     const details = await res.json();
                     setSelectedItem(prev => ({ ...prev, ...details, source: 'anicli', type: 'anime', hasFullDetails: true }));
-                } else if (source === 'hianime') {
+                } else if (source === 'animepahe') {
                     let details = {};
                     let episodes = [];
                     try {
@@ -707,7 +724,7 @@ function App() {
                         ...(details.id ? details : { id, title: details.title || (prev && prev.title) || '' }),
                         animeEpisodes: episodes,
                         type: 'anime',
-                        source: 'hianime',
+                        source: 'animepahe',
                         hasFullDetails: true
                     }));
                 } else if (source === 'manga') {
@@ -775,8 +792,8 @@ function App() {
             console.log("[App] loadWatch triggered for:", id, "Source:", source);
             try {
                 let details = { id, source }; // Default with known info
-                if (source === 'hianime') {
-                    // HiAnime: fetch details and episodes then set player to use embed flow
+                if (source === 'animepahe') {
+                    // Anime: fetch details and episodes then set player to use embed flow
                     const base = getTargetBase(source);
                     try {
                         const dRes = await fetch(`${base}/api/anime/details/${id}`);
@@ -791,7 +808,7 @@ function App() {
                     } catch (e) { /* ignore */ }
 
                     // Provide enough info for WatchPage to construct embed URL / episodeId mapping
-                    const item = { ...details, id, source: 'hianime', type: 'anime', hasFullDetails: true };
+                    const item = { ...details, id, source: 'animepahe', type: 'anime', hasFullDetails: true };
                     setVideoPlayerData({ item, season: season || null, episode: ep || null, animeEpisodes: episodes });
                     setSelectedItem(null);
                     return;
@@ -872,7 +889,7 @@ function App() {
                 if (!it.hasFullDetails) return false;
 
                 // Source-specific checks
-                if (source === 'hianime') return it.animeEpisodes && it.animeEpisodes.length > 0;
+                if (source === 'animepahe') return it.animeEpisodes && it.animeEpisodes.length > 0;
                 if (source === 'manga') return it.volumes && Object.keys(it.volumes).length > 0;
                 if (source === 'music') return (it.tracks && it.tracks.length > 0) || (it.songs && it.songs.length > 0);
                 if (it.type === 'series' || it.type === 'anime') return it.seasons && it.seasons.length > 0;
@@ -962,7 +979,7 @@ function App() {
                     <div style={{ marginBottom: '1rem', marginLeft: '0.5rem', opacity: 0.6, fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
                         {activeSource === 'home' ? 'Discover' :
                             activeSource === 'moviebox' ? 'Library' :
-                                activeSource === 'hianime' ? 'Anime World' :
+                                activeSource === 'animepahe' ? 'Anime World' :
                                     activeSource === 'manga' ? 'Manga Collection' :
                                         activeSource === 'music' ? 'Music Library' :
                                             activeSource === 'news' ? 'News Feed' :
@@ -996,7 +1013,7 @@ function App() {
                                     activeSource === 'music' ? 'Search music or playlists...' :
                                         activeSource === 'manga' ? "Search manga..." :
                                             activeSource === 'novel' ? "Search novels..." :
-                                                activeSource === 'hianime' ? "Search anime..." :
+                                                activeSource === 'animepahe' ? "Search anime..." :
                                                     'Search for movies or series...'}
 
                             />
@@ -1007,7 +1024,7 @@ function App() {
                         <div style={{ padding: '1rem 0' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
                                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                    {['all', 'moviebox', 'hianime', 'manga', 'music'].map(f => (
+                                    {['all', 'moviebox', 'animepahe', 'manga', 'music'].map(f => (
                                         <button
                                             key={f}
                                             onClick={() => setHistoryFilter(f)}
@@ -1023,7 +1040,7 @@ function App() {
                                                 transition: 'all 0.2s'
                                             }}
                                         >
-                                            {f === 'hianime' ? 'Anime' : f}
+                                            {f === 'animepahe' ? 'Anime' : f}
                                         </button>
                                     ))}
                                 </div>

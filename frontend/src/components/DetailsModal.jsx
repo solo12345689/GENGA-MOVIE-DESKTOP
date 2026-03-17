@@ -30,7 +30,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
         setSelectedNovelCh(null);
 
 
-        if (item && item.source === 'hianime') {
+        if (item && item.source === 'animepahe') {
             const fetchEpisodes = async () => {
                 setEpisodesLoading(true);
                 const url = `${API_BASE}/api/anime/episodes/${item.id}`;
@@ -44,7 +44,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                             setSelectedAnimeEp(data.data.episodes[0]);
                         }
                     } else {
-                        console.warn("[DetailsModal] HiAnime API returned status 200 but no episodes array", data);
+                        console.warn("[DetailsModal] Anime API returned status 200 but no episodes array", data);
                         setAnimeEpisodes([]);
                     }
                 } catch (err) {
@@ -101,13 +101,13 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                     alert('Please select a season and episode');
                 }
             }
-            // HiAnime
+            // Anime (AnimePahe / Gogo)
             else if (selectedAnimeEp) {
                 onStream({ ...item, type: 'anime', episodeId: selectedAnimeEp.episodeId, episodeNo: selectedAnimeEp.number, language: animeLanguage });
             } else {
                 alert('Please select an episode');
             }
-        } else if (item.source === 'hianime') {
+        } else if (item.source === 'animepahe') {
             if (selectedAnimeEp) {
                 onStream({ ...item, type: 'anime', episodeId: selectedAnimeEp.episodeId, episodeNo: selectedAnimeEp.number, language: animeLanguage });
             } else {
@@ -280,7 +280,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                                     {item.source === 'music' ? 'Fetching tracks and information...' :
                                         item.type === 'manga' ? 'Fetching chapters and volumes...' :
                                             item.source === 'novel' ? 'Fetching novel chapters and metadata...' :
-                                                item.source === 'hianime' || item.type === 'anime' ? 'Fetching episodes and information...' :
+                                                item.source === 'animepahe' || item.type === 'anime' ? 'Fetching episodes and information...' :
                                                     'Fetching seasons and ratings...'}
 
                                 </div>
@@ -417,8 +417,8 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                                     </div>
                                 )}
 
-                                {/* --- HIANIME EPISODES --- */}
-                                {item.source === 'hianime' && (
+                                {/* --- ANIME EPISODES --- */}
+                                {item.source === 'animepahe' && (
                                     <div style={{
                                         marginBottom: '2rem',
                                         background: 'rgba(255, 255, 255, 0.03)',
@@ -650,7 +650,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                                                 {item.source === 'manga' || item.source === 'novel' ? 'Read Now' : 'Stream Now'}
                                             </button>
 
-                                            {item.source !== 'hianime' && item.source !== 'novel' && (
+                                            {item.source !== 'animepahe' && item.source !== 'novel' && (
                                                 <div style={{ display: 'flex', gap: '1rem', flex: 1 }}>
                                                     <button className="btn btn-glass" onClick={() => handleDownloadClick()} style={{ flex: 1 }}>
                                                         {item.source === 'manga' ? 'Download ZIP' : 'Download'}

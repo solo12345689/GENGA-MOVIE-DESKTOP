@@ -44,8 +44,8 @@ process.on('unhandledRejection', (reason, promise) => {
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-let MANGA, NEWS, ANIME, HiAnime;
-let hianime, hianime2, gogoanime, mangapill;
+let MANGA, NEWS, ANIME;
+let animepahe, gogoanime, mangapill;
 
 async function initExtensions() {
     try {
@@ -54,14 +54,7 @@ async function initExtensions() {
         NEWS = ext.NEWS;
         ANIME = ext.ANIME;
         
-        // Use dynamic import for the ESM aniwatch package
-        const aniwatchModule = await import('@genga-movie/aniwatch');
-        HiAnime = aniwatchModule.HiAnime;
-        
         log('All extensions loaded successfully');
-        log(`HiAnime type: ${typeof HiAnime}, default type: ${typeof (HiAnime || {}).default}`);
-        log(`ANIME.Hianime type: ${typeof ANIME.Hianime}, default type: ${typeof (ANIME.Hianime || {}).default}`);
-        
         const create = (cls) => {
             if (!cls) return null;
             if (typeof cls === 'function') return new cls();
@@ -72,8 +65,7 @@ async function initExtensions() {
             return null;
         };
 
-        hianime = create(HiAnime) || new (HiAnime.HiAnime || HiAnime.default || HiAnime)();
-        hianime2 = create(ANIME.Hianime);
+        animepahe = create(ANIME.AnimePahe);
         try {
             gogoanime = create(ANIME.AnimeSama) || { search: () => ({ results: [] }), fetchAnimeInfo: () => ({ episodes: [] }) }; 
         } catch (e) {
@@ -101,23 +93,57 @@ app.use((req, res, next) => {
 
 app.get('/', (req, res) => res.json({ status: 'ok', service: 'NodeBridge', timestamp: new Date().toISOString() }));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/system/ip', (req, res) => {
+    const nets = os.networkInterfaces();
+    let result = '127.0.0.1';
+    for (const name of Object.keys(nets)) {
+        for (const net of nets[name]) {
+            if (net.family === 'IPv4' && !net.internal) {
+                result = net.address;
+                break;
+            }
+        }
+        if (result !== '127.0.0.1') break;
+    }
+    res.json({ ip: result });
+});
 
 const getPoster = (it) => {
-    let p = it.poster || it.image || it.thumbnail || it.cover || '';
-    if (typeof p === 'string' && p.startsWith('//')) p = 'https:' + p;
+    if (!it) return '';
+    let p = it.poster || it.image || it.snapshot || it.screenshot || it.episodeImage || it.img || it.thumbnail || it.cover || it.header_image || it.banner_image || '';
+    
+    // Handle nested objects from some providers
+    if (typeof p === 'object' && p !== null) {
+        p = p.url || p.large || p.medium || p.small || p.original || '';
+    }
+    
+    if (typeof p === 'string') {
+        if (p.startsWith('//')) p = 'https:' + p;
+        // Fix for some malformed URLs
+        if (p.includes(' ') && !p.startsWith('http')) p = p.trim();
+    }
     return p;
 };
 
 const normalize = (list) => (list || []).map(it => {
-    const poster = getPoster(it);
+    let poster = getPoster(it);
+    // Proxy the poster via our backend image-proxy to bypass hotlinking
+    if (poster && typeof poster === 'string' && poster.startsWith('http') && !poster.includes('image-proxy')) {
+        // Use 127.0.0.1 instead of localhost for better compatibility
+        poster = `http://127.0.0.1:8000/api/image-proxy?url=${encodeURIComponent(poster)}`;
+    }
+    
     return {
         id: it.id,
-        title: it.name || it.title || '',
-        poster: poster,
-        poster_url: poster, 
-        source: 'hianime',
+        title: it.name || it.title || it.animeTitle || '',
+        poster: poster || null,
+        poster_url: poster || null, 
+        source: 'animepahe',
         type: 'anime',
-        description: it.description || it.plot || ''
+        description: it.description || it.plot || '',
+        sub: true,
+        dub: it.isDub || false,
+        episode: it.episodeNumber || it.episode || ''
     };
 });
 
@@ -125,29 +151,18 @@ const normalize = (list) => (list || []).map(it => {
 app.get('/anime/home', async (req, res) => {
     let groups = [];
     try {
-        log('Attempting HiAnime Home...');
-        const results = await withRetry(() => hianime.getHomePage(), 'HiAnime Home', 3, 1000);
-        if (results) {
-            if (results.spotlightAnimes?.length > 0) groups.push({ title: 'Spotlight', items: normalize(results.spotlightAnimes) });
-            if (results.trendingAnimes?.length > 0)  groups.push({ title: 'Trending', items: normalize(results.trendingAnimes) });
-            if (results.latestEpisodeAnimes?.length > 0) groups.push({ title: 'Latest Episodes', items: normalize(results.latestEpisodeAnimes) });
-            if (results.mostPopularAnimes?.length > 0)   groups.push({ title: 'Most Popular', items: normalize(results.mostPopularAnimes) });
+        log('Attempting AnimePahe Recent Home...');
+        const results = await withRetry(() => animepahe.fetchRecentEpisodes(), 'AnimePahe Home', 3, 1000);
+        if (results && results.results?.length > 0) {
+            groups.push({ title: 'Recent Episodes', items: normalize(results.results) });
         }
-    } catch (e) { log(`HiAnime Home failed: ${e.message}`); }
-
-    if (groups.length === 0) {
-        log('Falling back to Consumet Hianime search...');
-        try {
-            const results = await withRetry(() => hianime2.search('one piece'), 'Consumet HiAnime fallback', 2, 1000);
-            if (results.results.length > 0) groups.push({ title: 'Recent Anime', items: normalize(results.results) });
-        } catch (e2) { log(`Consumet Hianime search failed: ${e2.message}`); }
-    }
+    } catch (e) { log(`AnimePahe Home failed: ${e.message}`); }
 
     if (groups.length === 0) {
         log('Falling back to Gogoanime...');
         try {
             const results = await withRetry(() => gogoanime.search('popular'), 'Gogoanime fallback', 2, 1000);
-            if (results.results.length > 0) groups.push({ title: 'Gogo Popular', items: normalize(results.results) });
+            if (results && results.results?.length > 0) groups.push({ title: 'Gogo Popular', items: normalize(results.results) });
         } catch (e3) { log(`Gogoanime search failed: ${e3.message}`); }
     }
     res.json(groups);
@@ -158,39 +173,14 @@ app.get('/anime/search', async (req, res) => {
         const { query } = req.query;
         log(`Anime Search requested: ${query}`);
         try { 
-            const results = await withRetry(() => hianime.search(query), `HiAnime search: ${query}`, 2); 
-            if (results && results.animes?.length > 0) {
-                return res.json(normalize(results.animes)); 
+            const results = await withRetry(() => animepahe.search(query), `AnimePahe search: ${query}`, 2); 
+            if (results && results.results?.length > 0) {
+                return res.json(normalize(results.results)); 
             }
-            throw new Error("No results from extension");
+            throw new Error("No results from AnimePahe");
         }
         catch (e) { 
-             log(`HiAnime Ext search failed: ${e.message}, trying hianime2`);
-             try { 
-                 const results = await withRetry(() => hianime2.search(query), `HiAnime2 search: ${query}`, 2); 
-                 if (results && results.results?.length > 0) return res.json(normalize(results.results)); 
-             }
-             catch (e2) { log(`Hianime2 failed: ${e2.message}`); }
-
-             // Custom Scraping Fallback (Axios + Cheerio)
-             try {
-                log(`Attempting direct HiAnime scraping for: ${query}`);
-                const searchUrl = `https://hianime.to/search?keyword=${encodeURIComponent(query)}`;
-                const { data: html } = await axios.get(searchUrl, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' }
-                });
-                const $ = cheerio.load(html);
-                const items = [];
-                $('.film_list-wrap .flw-item').each((i, el) => {
-                    const $el = $(el);
-                    const id = $el.find('.film-poster a').attr('href')?.split('/').pop();
-                    const title = $el.find('.film-name a').text().trim();
-                    const poster = $el.find('img.film-poster-img').attr('data-src') || $el.find('img').attr('src');
-                    if (id && title) items.push({ id, title, poster, poster_url: poster, source: 'hianime', type: 'anime' });
-                });
-                if (items.length > 0) return res.json(normalize(items));
-             } catch (eScrape) { log(`Direct scrape failed: ${eScrape.message}`); }
-
+             log(`AnimePahe search failed: ${e.message}, trying Gogoanime fallback`);
              try {
                  log(`Trying Gogoanime fallback for: ${query}`);
                  const results = await withRetry(() => gogoanime.search(query), `Gogo search: ${query}`, 1); 
@@ -207,21 +197,32 @@ app.get('/anime/details/:id', async (req, res) => {
     try {
         const { id } = req.params;
         try { 
-            const details = await withRetry(() => hianime.getInfo(id), `HiAnime info: ${id}`, 2);
-            // Ensure poster is present in details
-            if (details && !details.poster && details.image) details.poster = details.image;
+            const results = await withRetry(() => animepahe.fetchAnimeInfo(id), `AnimePahe info: ${id}`, 2);
+            const episodes = (results.episodes || []).map(ep => ({
+                number: ep.number,
+                episodeId: ep.id,
+                title: ep.title || `Episode ${ep.number}`
+            }));
+            const poster = results.image || results.poster;
+            const proxiedPoster = poster ? `http://localhost:8000/api/image-proxy?url=${encodeURIComponent(poster)}` : '';
+            
+            const details = {
+                id: results.id,
+                name: results.title || results.name,
+                poster: proxiedPoster,
+                description: results.description || results.plot || '',
+                episodes: episodes,
+                animeEpisodes: episodes // Provide both for safety
+            };
             res.json(details); 
         }
         catch (e) {
             try {
-                const results = await withRetry(() => hianime2.fetchAnimeInfo(id), `HiAnime2 info: ${id}`, 2);
-                res.json({ id: results.id, name: results.title, poster: results.image, description: results.description, animeEpisodes: (results.episodes || []).map(ep => ({ number: ep.number, episodeId: ep.id, title: `Episode ${ep.number}` })) });
-            } catch (e2) {
-                try {
-                    const results = await withRetry(() => gogoanime.fetchAnimeInfo(id), `Gogo info: ${id}`, 2);
-                    res.json({ id: results.id, name: results.title, poster: results.image, description: results.description, animeEpisodes: (results.episodes || []).map(ep => ({ number: ep.number, episodeId: ep.id, title: `Episode ${ep.number}` })) });
-                } catch (e3) { res.status(500).json({ error: e3.message }); }
-            }
+                const results = await withRetry(() => gogoanime.fetchAnimeInfo(id), `Gogo info: ${id}`, 2);
+                const poster = results.image;
+                const proxiedPoster = poster ? `http://localhost:8000/api/image-proxy?url=${encodeURIComponent(poster)}` : '';
+                res.json({ id: results.id, name: results.title, poster: proxiedPoster, description: results.description, animeEpisodes: (results.episodes || []).map(ep => ({ number: ep.number, episodeId: ep.id, title: `Episode ${ep.number}` })) });
+            } catch (e3) { res.status(500).json({ error: e3.message }); }
         }
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -232,47 +233,20 @@ app.get('/anime/episodes/:id', async (req, res) => {
         log(`Fetching Anime Episodes for: ${id}`);
         let episodes = [];
         try { 
-            const results = await withRetry(() => hianime.getEpisodes(id), `HiAnime episodes: ${id}`, 2);
-            episodes = results.episodes || results || [];
-            log(`HiAnime Ext found ${episodes.length} episodes`);
+            const results = await withRetry(() => animepahe.fetchAnimeInfo(id), `AnimePahe episodes: ${id}`, 2);
+            episodes = (results.episodes || []).map(ep => ({
+                number: ep.number,
+                episodeId: ep.id,
+                title: ep.title || `Episode ${ep.number}`
+            }));
+            log(`AnimePahe Ext found ${episodes.length} episodes`);
         } catch (e) {
-            log(`HiAnime Ext failed: ${e.message}, trying direct scrape`);
+            log(`AnimePahe Ext failed: ${e.message}, trying fallback`);
             try {
-                const animeNumId = id.split('-').pop();
-                const epUrl = `https://hianime.to/ajax/v2/episode/list/${animeNumId}`;
-                log(`Scraping episodes directly from: ${epUrl}`);
-                const { data } = await axios.get(epUrl, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' },
-                    timeout: 8000
-                });
-                
-                if (data && data.html) {
-                    const $ = cheerio.load(data.html);
-                    $('.ssl-item.ep-item').each((i, el) => {
-                        const $el = $(el);
-                        episodes.push({
-                            number: parseInt($el.attr('data-number') || i + 1),
-                            episodeId: `${id}?ep=${$el.attr('data-id')}`,
-                            title: $el.attr('title') || `Episode ${$el.attr('data-number') || i + 1}`
-                        });
-                    });
-                    log(`Direct scrape found ${episodes.length} episodes`);
-                }
-                
-                if (episodes.length === 0) throw new Error("Scrape returned 0 episodes");
-            } catch (eScrape) {
-                log(`Direct scrape failed: ${eScrape.message}, trying 3rd party providers...`);
-                try {
-                    const results = await withRetry(() => hianime2.fetchAnimeInfo(id), `HiAnime2 episodes fallback: ${id}`, 2);
-                    episodes = (results.episodes || []).map(ep => ({ number: ep.number, episodeId: ep.id, title: ep.title || `Episode ${ep.number}` }));
-                } catch (e2) {
-                    try {
-                        const results = await withRetry(() => gogoanime.fetchAnimeInfo(id), `Gogo episodes fallback: ${id}`, 2);
-                        episodes = (results.episodes || []).map(ep => ({ number: ep.number, episodeId: ep.id, title: ep.title || `Episode ${ep.number}` }));
-                    } catch (e3) {
-                        log(`All anime episode fallbacks failed for ${id}`);
-                    }
-                }
+                const results = await withRetry(() => gogoanime.fetchAnimeInfo(id), `Gogo episodes fallback: ${id}`, 2);
+                episodes = (results.episodes || []).map(ep => ({ number: ep.number, episodeId: ep.id, title: ep.title || `Episode ${ep.number}` }));
+            } catch (e3) {
+                log(`All anime episode fallbacks failed for ${id}`);
             }
         }
         res.json({ status: 200, data: { episodes: episodes } });
@@ -283,29 +257,22 @@ app.get('/anime/episodes/:id', async (req, res) => {
 });
 
 app.get('/anime/sources', async (req, res) => {
-    const { episodeId, category } = req.query;
-    log(`Fetching Anime Sources for: ${episodeId} (${category || 'sub'})`);
+    const { episodeId } = req.query;
+    log(`Fetching Anime Sources for: ${episodeId}`);
     try {
         try { 
-            const results = await withRetry(() => hianime.getEpisodeSources(episodeId, 'hd-1', category || 'sub'), `HiAnime sources: ${episodeId}`, 2);
-            log(`HiAnime Ext sources found`);
-            res.json(results); 
-        } catch (e) { 
-             log(`HiAnime Ext sources failed: ${e.message}, trying fallbacks`);
-             try { 
-                const results = await withRetry(() => hianime2.fetchEpisodeSources(episodeId), `HiAnime2 sources fallback: ${episodeId}`, 1);
-                log(`Fallback 1 sources found`);
-                res.json(results);
-             } catch (e2) { 
-                log(`Fallback 1 sources failed: ${e2.message}, trying fallback 2`);
-                try {
-                    const results = await withRetry(() => gogoanime.fetchEpisodeSources(episodeId), `Gogo sources fallback: ${episodeId}`, 1);
-                    log(`Fallback 2 sources found`);
-                    res.json(results);
-                } catch (e3) {
-                    log(`All anime source fallbacks failed for ${episodeId}`);
-                    res.status(500).json({ error: 'All providers failed' });
-                }
+            const results = await withRetry(() => animepahe.fetchEpisodeSources(episodeId), `AnimePahe sources: ${episodeId}`, 2);
+            log(`AnimePahe Ext sources found`);
+            return res.json(results); 
+        } catch (e) {
+             log(`AnimePahe Ext sources failed: ${e.message}, trying Gogoanime fallback`);
+             try {
+                 const results = await withRetry(() => gogoanime.fetchEpisodeSources(episodeId), `Gogo sources fallback: ${episodeId}`, 1);
+                 log(`Fallback sources found`);
+                 return res.json(results);
+             } catch (e2) {
+                 log(`All anime source fallbacks failed for ${episodeId}`);
+                 return res.status(500).json({ error: 'All providers failed' });
              }
         }
     } catch (err) { 
