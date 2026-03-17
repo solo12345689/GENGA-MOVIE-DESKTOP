@@ -1,34 +1,34 @@
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, Response, Request, BackgroundTasks
-from fastapi.responses import StreamingResponse, RedirectResponse
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, Response, Request, BackgroundTasks # type: ignore
+from fastapi.responses import StreamingResponse, RedirectResponse # type: ignore
+from pydantic import BaseModel # type: ignore
 from typing import List, Optional, Any, Union, get_origin, get_args
 import asyncio
-from moviebox_api import Session, Search, SubjectType, MovieAuto, TVSeriesDetails, Homepage
-from moviebox_api.download import (
+from moviebox_api import Session, Search, SubjectType, MovieAuto, TVSeriesDetails, Homepage # type: ignore
+from moviebox_api.download import ( # type: ignore
     MediaFileDownloader, 
     DownloadableMovieFilesDetail, 
     DownloadableTVSeriesFilesDetail,
     resolve_media_file_to_be_downloaded
 )
-from moviebox_api.extractor._core import ItemJsonDetailsModel
-from moviebox_api.extractor.models.json import SubjectModel, SubjectTrailerModel
-from moviebox_api.models import SearchResultsItem
-from cinecli_service import CineCLIService
-from mal_service import MALService
-from manga_service import MangaService
-from music_service import MusicService
-from novel_service import NovelService
-from tv_service import TVService
+from moviebox_api.extractor._core import ItemJsonDetailsModel # type: ignore
+from moviebox_api.extractor.models.json import SubjectModel, SubjectTrailerModel # type: ignore
+from moviebox_api.models import SearchResultsItem # type: ignore
+from cinecli_service import CineCLIService # type: ignore
+from mal_service import MALService # type: ignore
+from manga_service import MangaService # type: ignore
+from music_service import MusicService # type: ignore
+from novel_service import NovelService # type: ignore
+from tv_service import TVService # type: ignore
 import os
-import lncrawl.server.api
-from gaanapy.app import app as gaanapy_app
+import lncrawl.server.api # type: ignore
+from gaanapy.app import app as gaanapy_app # type: ignore
 import json
 import subprocess
 import shutil
-import httpx
+import httpx # type: ignore
 import traceback
 import uuid
-import yt_dlp
+import yt_dlp # type: ignore
 from urllib.parse import quote
 import time
 import random
@@ -274,7 +274,7 @@ async def resolve_tv_stream(url: str):
         }
         
         loop = asyncio.get_event_loop()
-        def extract():
+        def extract(*_args, **_kwargs):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(target, download=False)
         
@@ -297,7 +297,8 @@ async def resolve_tv_stream(url: str):
                 return {"url": stream_url, "type": "video"}
 
     except Exception as e:
-        api_log(f"YouTube resolution failed for {vid_id or url}: {str(e)[:100]}")
+        err_msg = str(e)
+        api_log(f"YouTube resolution failed for {vid_id or url}: {err_msg[:100]}")
 
     # Fallback to IFrame ONLY as an absolute last resort if all else fails
     if vid_id:
@@ -476,7 +477,7 @@ def get_source_headers(url: str, source: Optional[str] = None) -> list[dict]:
                 configs_refs.append(session_cfg)
 
     # 2. Add heuristics if session headers didn't cover it or for variety
-    if source in ['animepahe', 'gogoanime'] or any(d in url_lower for d in ["owocdn", "animepahe", "pahe", "gogoanime", "anitaku"]):
+    if source in ['animepahe', 'gogoanime'] or any(d in url_lower for d in ["owocdn", "uwucdn", "animepahe", "pahe", "gogoanime", "anitaku", "kwik", "vofutv"]):
         # Base domains for AnimePahe
         domains = [
             'https://animepahe.com', 'https://animepahe.com/',
@@ -503,8 +504,8 @@ def get_source_headers(url: str, source: Optional[str] = None) -> list[dict]:
             })
             configs_refs.append(cfg)
         
-        # CRITICAL FIX: Specific for owocdn (AnimePahe CDN)
-        if "owocdn.top" in url_lower:
+        # CRITICAL FIX: Specific for owocdn/uwucdn (AnimePahe CDN)
+        if "owocdn.top" in url_lower or "uwucdn.top" in url_lower or "vofutv.com" in url_lower:
             # 1. Minimal Working Config (from user's mpv test)
             # Use a SPECIAL KEY to indicate this should NOT be merged with base_headers baggage
             configs_refs.insert(0, {
@@ -1046,8 +1047,9 @@ async def debug_search(query: str) -> dict:
         search_instance = Search(session=session, query=query)
         results_model = await search_instance.get_content_model()
         
-        if hasattr(results_model, 'items') and results_model.items:
-            item = results_model.items[0]
+        items = getattr(results_model, 'items', None)
+        if items:
+            item = items[0]
             item_dict = {attr: str(getattr(item, attr)) for attr in dir(item) 
                          if not attr.startswith('_') and not callable(getattr(item, attr))}
             return {"first_item_attributes": item_dict}
@@ -1247,25 +1249,36 @@ async def details(item_id: str) -> dict:
         try:
             seasons_list = None
             # Path 1: details_model.resData.resource.seasons
-            if (not isinstance(details_model, Exception) and hasattr(details_model, 'resData')):
-                if hasattr(details_model.resData, 'resource') and hasattr(details_model.resData.resource, 'seasons'):
-                    seasons_list = details_model.resData.resource.seasons
-                elif hasattr(details_model.resData, 'seasons'):
-                    seasons_list = details_model.resData.seasons
+            # Path 1: details_model.resData.resource.seasons
+            res_data = getattr(details_model, 'resData', None)
+            if res_data:
+                resource = getattr(res_data, 'resource', None)
+                if resource:
+                    seasons_list = getattr(resource, 'seasons', None)
+                if not seasons_list:
+                    seasons_list = getattr(res_data, 'seasons', None)
+            
             # Path 2: details_model.resource.seasons
-            elif (not isinstance(details_model, Exception) and hasattr(details_model, 'resource')) and hasattr(details_model.resource, 'seasons'):
-                seasons_list = details_model.resource.seasons
+            if not seasons_list:
+                resource = getattr(details_model, 'resource', None)
+                if resource:
+                    seasons_list = getattr(resource, 'seasons', None)
+            
             # Path 3: details_model.seasons
-            elif (not isinstance(details_model, Exception) and hasattr(details_model, 'seasons')):
-                seasons_list = details_model.seasons
+            if not seasons_list:
+                seasons_list = getattr(details_model, 'seasons', None)
+            
             # Path 4: details_model.item.seasons
-            elif (not isinstance(details_model, Exception) and hasattr(details_model, 'item')) and hasattr(details_model.item, 'seasons'):
-                seasons_list = details_model.item.seasons
+            if not seasons_list:
+                item_obj = getattr(details_model, 'item', None)
+                if item_obj:
+                    seasons_list = getattr(item_obj, 'seasons', None)
+            
             # Path 5: data.seasons
-            elif (not isinstance(details_model, Exception) and hasattr(details_model, 'data')):
-                data_obj = details_model.data
-                if hasattr(data_obj, 'seasons'):
-                    seasons_list = data_obj.seasons
+            if not seasons_list:
+                data_obj = getattr(details_model, 'data', None)
+                if data_obj:
+                    seasons_list = getattr(data_obj, 'seasons', None)
 
             if seasons_list:
                 for season in seasons_list:
