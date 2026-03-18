@@ -125,12 +125,13 @@ const getPoster = (it) => {
     return p;
 };
 
+const ANIMEPAHE_REFERER = 'https://kwik.cx/';
+
 const normalize = (list) => (list || []).map(it => {
     let poster = getPoster(it);
-    // Proxy the poster via our backend image-proxy to bypass hotlinking
-    if (poster && typeof poster === 'string' && poster.startsWith('http') && !poster.includes('image-proxy')) {
-        // Use 127.0.0.1 instead of localhost for better compatibility
-        poster = `http://127.0.0.1:8000/api/image-proxy?url=${encodeURIComponent(poster)}`;
+    // Use the dedicated anime image proxy for anime content
+    if (poster && typeof poster === 'string' && poster.startsWith('http')) {
+        poster = `/api/anime/image-proxy?url=${encodeURIComponent(poster)}`;
     }
     
     return {
@@ -204,7 +205,7 @@ app.get('/anime/details/:id', async (req, res) => {
                 title: ep.title || `Episode ${ep.number}`
             }));
             const poster = results.image || results.poster;
-            const proxiedPoster = poster ? `http://localhost:8000/api/image-proxy?url=${encodeURIComponent(poster)}` : '';
+            const proxiedPoster = poster ? `/api/anime/image-proxy?url=${encodeURIComponent(poster)}` : '';
             
             const details = {
                 id: results.id,
@@ -220,7 +221,7 @@ app.get('/anime/details/:id', async (req, res) => {
             try {
                 const results = await withRetry(() => gogoanime.fetchAnimeInfo(id), `Gogo info: ${id}`, 2);
                 const poster = results.image;
-                const proxiedPoster = poster ? `http://localhost:8000/api/image-proxy?url=${encodeURIComponent(poster)}` : '';
+                const proxiedPoster = poster ? `/api/anime/image-proxy?url=${encodeURIComponent(poster)}` : '';
                 res.json({ id: results.id, name: results.title, poster: proxiedPoster, description: results.description, animeEpisodes: (results.episodes || []).map(ep => ({ number: ep.number, episodeId: ep.id, title: `Episode ${ep.number}` })) });
             } catch (e3) { res.status(500).json({ error: e3.message }); }
         }
@@ -260,21 +261,39 @@ app.get('/anime/sources', async (req, res) => {
     const { episodeId } = req.query;
     log(`Fetching Anime Sources for: ${episodeId}`);
     try {
+        let results = null;
         try { 
-            const results = await withRetry(() => animepahe.fetchEpisodeSources(episodeId), `AnimePahe sources: ${episodeId}`, 2);
-            log(`AnimePahe Ext sources found`);
-            return res.json(results); 
+            results = await withRetry(() => animepahe.fetchEpisodeSources(episodeId), `AnimePahe sources: ${episodeId}`, 2);
+            log(`AnimePahe Ext sources found: ${JSON.stringify(Object.keys(results || {}))}`);
         } catch (e) {
              log(`AnimePahe Ext sources failed: ${e.message}, trying Gogoanime fallback`);
              try {
-                 const results = await withRetry(() => gogoanime.fetchEpisodeSources(episodeId), `Gogo sources fallback: ${episodeId}`, 1);
+                 results = await withRetry(() => gogoanime.fetchEpisodeSources(episodeId), `Gogo sources fallback: ${episodeId}`, 1);
                  log(`Fallback sources found`);
-                 return res.json(results);
              } catch (e2) {
                  log(`All anime source fallbacks failed for ${episodeId}`);
                  return res.status(500).json({ error: 'All providers failed' });
              }
         }
+
+        if (!results) return res.status(500).json({ error: 'No results' });
+
+        // Normalize sources: Return RAW URLs and let the frontend handle wrapping
+        // This prevents the 502 double-proxy bug. 
+        const sourceList = results.sources || [];
+        const normalizedSources = sourceList.map(s => ({
+            url: s.url,
+            quality: s.quality || 'default',
+            type: 'hls',
+            isM3U8: s.isM3U8 || s.url.includes('.m3u8')
+        }));
+
+        // Also normalize poster images in headers if present
+        return res.json({
+            sources: normalizedSources,
+            subtitles: results.subtitles || [],
+            headers: { Referer: results.headers?.Referer || ANIMEPAHE_REFERER }
+        });
     } catch (err) { 
         log(`Anime Sources Global Error: ${err.message}`);
         res.status(500).json({ error: err.message }); 
@@ -404,6 +423,9 @@ async function fetchNews() {
             const link = $el.find('h3 a').attr('href');
             let thumbnail = $el.find('div.thumbnail').attr('data-src') || $el.find('img').attr('src');
             
+            // Extract Time/Date
+            const date = $el.find('time').text().trim() || 'Today';
+            
             if (title && link) {
                 const fullLink = link.startsWith('http') ? link : 'https://www.animenewsnetwork.com' + link;
                 if (thumbnail && !thumbnail.startsWith('http')) {
@@ -413,7 +435,8 @@ async function fetchNews() {
                     id: link,
                     title: title,
                     thumbnail: thumbnail || 'https://www.animenewsnetwork.com/images/masthead/logo.png',
-                    poster: thumbnail || 'https://www.animenewsnetwork.com/images/masthead/logo.png', // Add poster for UI consistency
+                    poster: thumbnail || 'https://www.animenewsnetwork.com/images/masthead/logo.png',
+                    uploadedAt: date,
                     url: fullLink
                 });
             }
@@ -439,12 +462,30 @@ app.get('/news/info', async (req, res) => {
     try { 
         const { id } = req.query;
         log(`Fetching News Info for: ${id}`);
-        // ID is already the relative path from fetchNews (e.g. /news/...)
-        const result = await new NEWS.ANN().fetchNewsInfo(id);
-        res.json(result); 
+        
+        const fullLink = id.startsWith('http') ? id : 'https://www.animenewsnetwork.com' + id;
+        
+        const resp = await axios.get(fullLink, {
+            timeout: 10000,
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' }
+        });
+        
+        const $ = cheerio.load(resp.data);
+        const title = $('h1#page_title').text().trim() || $('.meat h1').text().trim();
+        const content = $('.article-content').text().trim() || $('.meat').text().trim();
+        const image = $('.herald.box.news div.thumbnail img').attr('src') || $('meta[property="og:image"]').attr('content');
+        const date = $('time').first().text().trim() || '';
+        
+        res.json({
+            title: title || 'News Article',
+            description: content || 'Could not extract article content.',
+            thumbnail: image || '',
+            uploadedAt: date,
+            url: fullLink
+        });
     } catch (err) { 
-        log(`News Info Route Error: ${err.message}`);
-        res.json({ title: 'News', content: 'Unavailable' }); 
+        log(`News Info Manual Scrape Error: ${err.message}`);
+        res.json({ title: 'News', description: 'Unavailable', uploadedAt: '', url: '' }); 
     } 
 });
 

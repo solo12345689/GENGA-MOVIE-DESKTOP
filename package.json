@@ -42,13 +42,10 @@
             {
                 "from": "dist-backend",
                 "to": "backend"
-            },
-            {
-                "from": "dist-frontend",
-                "to": "dist-frontend"
             }
         ],
         "files": [
+            "dist-frontend/**/*",
             "electron/**/*",
             "node-bridge.js",
             "package.json"
@@ -56,6 +53,7 @@
     },
     "dependencies": {
         "@consumet/extensions": "^1.8.8",
+        "@genga-movie/aniwatch": "^1.0.1",
         "axios": "^1.13.6",
         "cheerio": "^1.2.0",
         "express": "^5.2.1"

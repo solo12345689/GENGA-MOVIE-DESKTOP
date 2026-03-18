@@ -1,37 +1,35 @@
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, Response, Request, BackgroundTasks # type: ignore
-from fastapi.responses import StreamingResponse, RedirectResponse # type: ignore
-from pydantic import BaseModel # type: ignore
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, Response, Request, BackgroundTasks
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from typing import List, Optional, Any, Union, get_origin, get_args
 import asyncio
-from moviebox_api import Session, Search, SubjectType, MovieAuto, TVSeriesDetails, Homepage # type: ignore
-from moviebox_api.download import ( # type: ignore
+from moviebox_api import Session, Search, SubjectType, MovieAuto, TVSeriesDetails, Homepage
+from moviebox_api.download import (
     MediaFileDownloader, 
     DownloadableMovieFilesDetail, 
     DownloadableTVSeriesFilesDetail,
     resolve_media_file_to_be_downloaded
 )
-from moviebox_api.extractor._core import ItemJsonDetailsModel # type: ignore
-from moviebox_api.extractor.models.json import SubjectModel, SubjectTrailerModel # type: ignore
-from moviebox_api.models import SearchResultsItem # type: ignore
-from cinecli_service import CineCLIService # type: ignore
-from mal_service import MALService # type: ignore
-from manga_service import MangaService # type: ignore
-from music_service import MusicService # type: ignore
-from novel_service import NovelService # type: ignore
-from tv_service import TVService # type: ignore
+from moviebox_api.extractor._core import ItemJsonDetailsModel
+from moviebox_api.extractor.models.json import SubjectModel, SubjectTrailerModel
+from moviebox_api.models import SearchResultsItem
+from cinecli_service import CineCLIService
+from mal_service import MALService
+from manga_service import MangaService
+from music_service import MusicService
+from novel_service import NovelService
+from tv_service import TVService
 import os
-import lncrawl.server.api # type: ignore
-from gaanapy.app import app as gaanapy_app # type: ignore
+import lncrawl.server.api
+from gaanapy.app import app as gaanapy_app
 import json
 import subprocess
 import shutil
-import httpx # type: ignore
+import httpx
 import traceback
 import uuid
-import yt_dlp # type: ignore
+import yt_dlp
 from urllib.parse import quote
-import time
-import random
 
 # --- Monkeypatch for Pydantic Validation Error ---
 def unwrap_annotation(annotation):
@@ -39,49 +37,36 @@ def unwrap_annotation(annotation):
     if origin is Union:
         args = get_args(annotation)
         for arg in args:
-            if arg is not type(None):
+            if isinstance(arg, type) and arg is not type(None):
                 return arg
     return annotation
 
 def patch_moviebox_models():
-    """
-    Patches moviebox_api models to fix potential Pydantic v1/v2 issues
-    and handle the Optional[SubjectTrailerModel] bug.
-    """
     try:
-        from moviebox_api.models import SubjectModel, SubjectTrailerModel, ItemJsonDetailsModel
-        from moviebox_api.utils import unwrap_annotation
-        from typing import Optional, Union
-
-        # Check if we need to patch trailer
-        if 'trailer' in SubjectModel.model_fields:
+        # Patch SubjectModel directly since we imported it
+        if hasattr(SubjectModel, 'model_fields') and 'trailer' in SubjectModel.model_fields:
             # Replace FieldInfo object to allow None
             from pydantic.fields import FieldInfo
             SubjectModel.model_fields['trailer'] = FieldInfo(annotation=Optional[Union[dict, SubjectTrailerModel]], default=None)
             
-            # Rebuild SubjectModel
             if hasattr(SubjectModel, 'model_rebuild'):
                 SubjectModel.model_rebuild(force=True)
-            elif hasattr(SubjectModel, 'update_forward_refs'):
-                SubjectModel.update_forward_refs()
             
-            # Rebuild ResDataModel (parent of SubjectModel)
+            # Rebuild parents
+            # We need to find ResDataModel to rebuild it
             if 'resData' in ItemJsonDetailsModel.model_fields:
                 ResDataModel = unwrap_annotation(ItemJsonDetailsModel.model_fields['resData'].annotation)
                 if hasattr(ResDataModel, 'model_rebuild'):
                     ResDataModel.model_rebuild(force=True)
-                elif hasattr(ResDataModel, 'update_forward_refs'):
-                    ResDataModel.update_forward_refs()
             
-            # Rebuild ItemJsonDetailsModel (root)
             if hasattr(ItemJsonDetailsModel, 'model_rebuild'):
                 ItemJsonDetailsModel.model_rebuild(force=True)
-            elif hasattr(ItemJsonDetailsModel, 'update_forward_refs'):
-                ItemJsonDetailsModel.update_forward_refs()
                 
             print("Successfully patched SubjectModel.trailer and rebuilt models")
     except Exception as e:
         print(f"Failed to patch models: {e}")
+        import traceback
+        traceback.print_exc()
 
 # Apply patch immediately
 patch_moviebox_models()
@@ -200,6 +185,7 @@ async def get_anime_sources(episode_id: str, category: str = "sub"):
             await asyncio.sleep(1)
     raise HTTPException(status_code=500, detail=f"Anime sources failed after 3 attempts: {last_err}")
 
+
 @router.get("/manga/search")
 async def search_manga(query: str):
     try:
@@ -227,88 +213,58 @@ async def get_manga_pages(chapterId: str):
 @router.get("/tv/resolve")
 async def resolve_tv_stream(url: str):
     """
-    Exhaustively resolves YouTube URLs into direct stream URLs (HLS or Video)
-    to avoid using IFrames in the frontend.
+    Resolves YouTube URLs into direct streams using yt-dlp python module.
+    Falls back to youtube-nocookie.com embed if yt-dlp fails.
     """
     import logging
+    # Canonicalize URL for detection
     lookup_url = url.lower()
-    is_youtube = any(d in lookup_url for d in ["youtube.com", "youtu.be", "youtube-nocookie.com"])
+    is_youtube = "youtube.com" in lookup_url or "youtu.be" in lookup_url or "youtube-nocookie.com" in lookup_url
     
-    if not is_youtube:
-        # For non-YouTube TV URLs, assume HLS if it looks like one, otherwise fallback to direct URL
-        return {"url": url, "type": "hls" if ".m3u8" in lookup_url else "video"}
-
-    api_log(f"Starting Exhaustive YouTube Resolution: {url}")
-    import re
-    # Broad ID Extraction
-    vid_id = None
-    patterns = [
-        r'[?&]v=([A-Za-z0-9_-]{11})', 
-        r'/embed/([A-Za-z0-9_-]{11})', 
-        r'youtu\.be/([A-Za-z0-9_-]{11})',
-        r'watch\?v=([A-Za-z0-9_-]{11})',
-        r'/v/([A-Za-z0-9_-]{11})',
-        r'shorts/([A-Za-z0-9_-]{11})'
-    ]
-    for p in patterns:
-        mm = re.search(p, url)
-        if mm:
-            vid_id = mm.group(1)
-            break
+    if is_youtube:
+        api_log(f"Resolving YouTube via yt-dlp: {url}")
+        import re
+        vid_id = None
+        patterns = [r'[?&]v=([A-Za-z0-9_-]{11})', r'/embed/([A-Za-z0-9_-]{11})', r'youtu\.be/([A-Za-z0-9_-]{11})']
+        for p in patterns:
+            mm = re.search(p, url)
+            if mm:
+                vid_id = mm.group(1)
+                break
+        
+        target = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else url
+        
+        try:
+            ydl_opts = {
+                'format': 'best[ext=mp4]/best',
+                'quiet': True,
+                'no_warnings': True,
+                'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                'referer': "https://www.youtube.com/",
+                'nocheckcertificate': True
+            }
+            # Run blocking yt_dlp extraction in an executor
+            loop = asyncio.get_event_loop()
+            def extract():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(target, download=False)
             
-    if not vid_id and len(url) == 11:
-        vid_id = url
-
-    target = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else url
-    
-    try:
-        ydl_opts = {
-            # Try to get best combined or best single format
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'skip_download': True,
-            'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            'referer': "https://www.youtube.com/",
-        }
-        
-        loop = asyncio.get_event_loop()
-        def extract(*_args, **_kwargs):
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(target, download=False)
-        
-        # Increase timeout slightly and run extraction
-        info = await asyncio.wait_for(loop.run_in_executor(None, extract), timeout=20.0)
-        
-        if info:
-            # 1. Check for HLS Manifest (Typical for Live or multi-res VOD)
-            stream_url = info.get('manifest_url') or info.get('url')
-            
-            # If we found a stream URL
-            if stream_url:
-                # If it's a manifest, it's perfect for our HLS player
-                if ".m3u8" in stream_url or "manifest" in stream_url:
-                    api_log(f"Successful Resolution (HLS): {vid_id}")
+            info = await loop.run_in_executor(None, extract)
+            if info:
+                stream_url = info.get('url') or (info.get('formats')[-1]['url'] if info.get('formats') else None)
+                if stream_url:
+                    api_log(f"YouTube Success via yt_dlp: {stream_url[:60]}...")
                     return {"url": stream_url, "type": "hls"}
-                
-                # If it's a direct mp4/googlevideo link
-                api_log(f"Successful Resolution (Direct Video): {vid_id}")
-                return {"url": stream_url, "type": "video"}
+        except Exception as e:
+            api_log(f"yt_dlp extraction failed for {target}: {e}")
 
-    except Exception as e:
-        err_msg = str(e)
-        api_log(f"YouTube resolution failed for {vid_id or url}: {err_msg[:100]}")
-
-    # Fallback to IFrame ONLY as an absolute last resort if all else fails
-    if vid_id:
-        # Note: We still provide the embed because showing nothing is worse, 
-        # but the backend will have tried its best to avoid this.
-        fallback_embed = f"https://www.youtube-nocookie.com/embed/{vid_id}?autoplay=1&rel=0&enablejsapi=1"
-        api_log(f"[WARNING] Resolution failed. Falling back to Embed for {vid_id}")
-        return {"url": fallback_embed, "type": "embed"}
-        
-    return {"url": url, "type": "embed"}
+        # Final Embed fallback if direct stream resolution failed
+        if vid_id:
+            fallback_embed = f"https://www.youtube-nocookie.com/embed/{vid_id}?autoplay=1"
+            api_log(f"YouTube Direct Stream Failed. Using Embed fallback: {fallback_embed}")
+            return {"url": fallback_embed, "type": "embed"}
+            
+    return {"url": url, "type": "hls"}
 
 
 manga_service = MangaService()
@@ -340,7 +296,7 @@ def get_http_client() -> httpx.AsyncClient:
     return _global_http_async_client
 
 # Simple in-memory cache: {uuid: item_object}
-search_cache: dict[str, dict] = {}
+search_cache = {}
 
 class ConnectionManager:
     def __init__(self):
@@ -366,7 +322,8 @@ class ConnectionManager:
 
 def extract_numeric_id(ep_id: str) -> str:
     """
-    Extracts the numeric episode ID from various episode string formats.
+    Extracts the numeric episode ID from various HiAnime episode string formats.
+    Megaplay REQUIRES the correct numeric episode ID to avoid 410 errors.
     """
     if not ep_id: return ""
     ep_id = str(ep_id).strip()
@@ -374,11 +331,11 @@ def extract_numeric_id(ep_id: str) -> str:
     if "ep=" in ep_id:
         return ep_id.split("ep=")[-1].split("&")[0]
     
-    # Check for UUID or numeric
+    # Fallback: only if the string is purely numeric
     if ep_id.isdigit():
         return ep_id
         
-    return ep_id 
+    return ""  # Return empty if we cannot safely determine the numeric episode ID
 
 def extract_seasons_from_title(title: str) -> List[dict]:
     """
@@ -435,31 +392,18 @@ def srt_to_vtt(srt_content: str) -> str:
         
     return vtt
 
-def get_source_headers(url: str, source: Optional[str] = None) -> list[dict]:
+def get_source_headers(url: str, source: str = None) -> list[dict]:
     """
     Returns a LIST of dictionary headers to try.
-    Mimics a modern Chrome browser as closely as possible.
+    Provides fallbacks for 403 Forbidden scenarios by cycling through possible Referers.
     """
-    chrome_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    base_headers = {
-        "User-Agent": chrome_ua,
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "video",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "cross-site",
-        "DNT": "1",
-        "Upgrade-Insecure-Requests": "1"
-    }
+    base_headers = DEFAULT_HEADERS.copy()
     
     # 2. Exhaustive Referer Cycling
     url_lower = url.lower()
     is_moviebox_cdn = any(d in url_lower for d in ["haildrop", "moviebox", "fogtwist", "sunburst", "stormshade", "hakunaymatata", "bcdn"]) or "/_v7/" in url_lower or "/_v10/" in url_lower
     
-    configs_refs: list[dict] = []
+    configs_refs = []
     
     # If it's MovieBox, prioritize using the exact headers currently in the session
     # as these are what were used to generate any signed URLs.
@@ -477,90 +421,26 @@ def get_source_headers(url: str, source: Optional[str] = None) -> list[dict]:
                 configs_refs.append(session_cfg)
 
     # 2. Add heuristics if session headers didn't cover it or for variety
-    if source in ['animepahe', 'gogoanime'] or any(d in url_lower for d in ["owocdn", "uwucdn", "animepahe", "pahe", "gogoanime", "anitaku", "kwik", "vofutv"]):
-        # Base domains for AnimePahe
-        domains = [
-            'https://animepahe.com', 'https://animepahe.com/',
-            'https://animepahe.si', 'https://animepahe.si/',
-            'https://animepahe.ru', 'https://animepahe.ru/',
-            'https://animepahe.org', 'https://animepahe.org/',
-            'https://pahe.win', 'https://pahe.win/',
-            'https://kwik.cx/', 'https://kwik.cx',
-            'https://kwikk.net/', 'https://kwikk.net'
-        ]
-        
-        # Base domains for Gogoanime
-        if source == 'gogoanime' or "gogo" in url_lower:
-            domains.extend(['https://gogoanime.hu/', 'https://gogotv.net/', 'https://anitaku.to/'])
+    if source == 'hianime':
+        configs_refs.append({'Referer': 'https://hianime.to/', 'Origin': 'https://hianime.to'})
 
-        for domain in domains:
-            cfg = base_headers.copy()
-            cfg.update({
-                'Referer': domain, 
-                'Origin': domain.rstrip('/'),
-                'Sec-Fetch-Dest': 'video',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'cross-site'
-            })
-            configs_refs.append(cfg)
-        
-        # CRITICAL FIX: Specific for owocdn/uwucdn (AnimePahe CDN)
-        if "owocdn.top" in url_lower or "uwucdn.top" in url_lower or "vofutv.com" in url_lower:
-            # 1. Minimal Working Config (from user's mpv test)
-            # Use a SPECIAL KEY to indicate this should NOT be merged with base_headers baggage
-            configs_refs.insert(0, {
-                'User-Agent': 'Mozilla/5.0',
-                'Referer': 'https://kwik.cx/',
-                'Origin': 'https://kwik.cx',
-                'Accept': '*/*',
-                '__clean__': True
-            })
-            # 1b. Truly minimal (No Origin, no baggage)
-            configs_refs.insert(1, {
-                'User-Agent': 'Mozilla/5.0',
-                'Referer': 'https://kwik.cx/',
-                '__clean__': True
-            })
-            # 2. Modern Browser Config (Fallback)
-            configs_refs.insert(2, {
-                **base_headers, 
-                'Referer': 'https://kwik.cx/', 
-                'Origin': 'https://kwik.cx',
-                'Sec-Fetch-Dest': 'video',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'cross-site'
-            })
-            # 3. No-slash variant
-            configs_refs.insert(3, {
-                **base_headers, 
-                'Referer': 'https://kwik.cx', 
-                'Origin': 'https://kwik.cx'
-            })
-        
-        # CRITICAL FIX: Use the URL's OWN domain as referer (often works for CDN segments)
-        try:
-            from urllib.parse import urlparse
-            p = urlparse(url)
-            parent_ref = f"{p.scheme}://{p.netloc}/"
-            configs_refs.append({**base_headers, 'Referer': parent_ref, 'Origin': parent_ref.rstrip('/')})
-        except: pass
-
-        # Specific fix for vault/kv servers on owocdn (they often check the exact subdomain)
-        if "owocdn.top" in url_lower:
-            parts = url.split('/')
-            if len(parts) > 2:
-                host = parts[2]
-                configs_refs.append({**base_headers, 'Referer': f"https://{host}/"})
-                configs_refs.append({**base_headers, 'Referer': f"https://{host}"})
-        
-        # Also try with NO Origin/Referer
-        configs_refs.append(base_headers.copy())
+    # User Request: Use these specific headers for Anime/Kwik streams
+    if source == 'animepahe' or 'animepahe' in url_lower or 'kwik' in url_lower:
+        configs_refs.insert(0, {
+            'Referer': 'https://kwik.cx/',
+            'Origin': 'https://kwik.cx',
+            'User-Agent': 'Mozilla/5.0'
+        })
+        configs_refs.append({'Referer': 'https://animepahe.com'})
+        configs_refs.append({'Referer': 'https://animepahe.ru'})
+        configs_refs.append({'Referer': 'https://animepahe.com/'})
+        configs_refs.append({'Referer': 'https://animepahe.ru/'})
 
     if "megaplay.buzz" in url_lower:
         configs_refs.append({'Referer': 'https://megaplay.buzz/', 'Origin': 'https://megaplay.buzz'})
         
-    if "megacloud" in url_lower or "vidcloud" in url_lower or "rabbitstream" in url_lower:
-        configs_refs.append({'Referer': 'https://megacloud.to/', 'Origin': 'https://megacloud.to'})
+    if "hianime" in url_lower or "aniwatch" in url_lower or "megacloud" in url_lower or "vidcloud" in url_lower or "rabbitstream" in url_lower:
+        configs_refs.append({'Referer': 'https://hianime.to/', 'Origin': 'https://hianime.to'})
     
     # VLC/MPV mimicking for TV streams (helps bypass browser-based throttling)
     if source == 'tv':
@@ -596,7 +476,7 @@ def get_source_headers(url: str, source: Optional[str] = None) -> list[dict]:
         from urllib.parse import urlparse
         domain_parts = urlparse(url).netloc.split(".")
         if len(domain_parts) >= 2:
-            domain = ".".join(domain_parts[-2:]) if len(domain_parts) >= 2 else (domain_parts[0] if domain_parts else "")
+            domain = ".".join(domain_parts[-2:])
             configs_refs.append({'Referer': f'https://{domain}/', 'Origin': f'https://{domain}'})
             configs_refs.append({'Referer': f'https://www.{domain}/', 'Origin': f'https://www.{domain}'})
         
@@ -613,7 +493,7 @@ def get_source_headers(url: str, source: Optional[str] = None) -> list[dict]:
     # Priority B: Universal Candidates (deduplicated)
     candidates = [
         {'Referer': 'https://megaplay.buzz/', 'Origin': 'https://megaplay.buzz'},
-        {'Referer': 'https://animepahe.com/', 'Origin': 'https://animepahe.com'},
+        {'Referer': 'https://hianime.to/', 'Origin': 'https://hianime.to'},
         {'Referer': 'https://vidcloud9.me/', 'Origin': 'https://vidcloud9.me'},
         {'Referer': 'https://megacloud.to/', 'Origin': 'https://megacloud.to'},
         {'Referer': 'https://v.showbox.cc/', 'Origin': 'https://v.showbox.cc'},
@@ -638,14 +518,10 @@ def get_source_headers(url: str, source: Optional[str] = None) -> list[dict]:
     # Merge with base_headers to create final configurations
     final_configs = []
     for ref_dict in final_refs:
-        if ref_dict.get('__clean__'):
-            # Use ONLY what's in the dict
-            cfg = {k: v for k, v in ref_dict.items() if k != '__clean__'}
-        else:
-            cfg = base_headers.copy()
-            cfg.pop('Referer', None)
-            cfg.pop('Origin', None)
-            cfg.update(ref_dict)
+        cfg = base_headers.copy()
+        cfg.pop('Referer', None)
+        cfg.pop('Origin', None)
+        cfg.update(ref_dict)
         final_configs.append(cfg)
         
     return final_configs
@@ -811,9 +687,7 @@ async def search(query: str, page: int = 1, content_type: str = "all") -> dict:
         
         items = []
         if hasattr(results_model, 'items'):
-            items_list = getattr(results_model, "items", [])
-        if items_list:
-            for item in items_list:
+            for item in results_model.items:
                 item_id = str(uuid.uuid4())
                 
                 # Use async helper to determine type and poster
@@ -836,8 +710,9 @@ async def search(query: str, page: int = 1, content_type: str = "all") -> dict:
                 if not year:
                     year = getattr(item, 'premiered', None)
                 
+                # Format year if it's a full date string
                 if year and isinstance(year, str) and len(year) >= 4:
-                    year = str(year)[:4]
+                    year = year[:4]
 
                 items.append({
                     "id": item_id,
@@ -873,7 +748,7 @@ async def get_novel_info(id: Optional[str] = None, url: Optional[str] = None):
 
 @router.get("/novel/chapter")
 @router.get("/api/novel/chapter")
-async def get_novel_chapter(id: Optional[str] = None, url: Optional[str] = None, format: str = "html"):
+async def get_novel_chapter(id: str = None, url: str = None, format: str = "html"):
     content = await novel_service.get_chapter_content(id, url, format)
 
     if not content:
@@ -1047,9 +922,8 @@ async def debug_search(query: str) -> dict:
         search_instance = Search(session=session, query=query)
         results_model = await search_instance.get_content_model()
         
-        items = getattr(results_model, 'items', None)
-        if items:
-            item = items[0]
+        if hasattr(results_model, 'items') and results_model.items:
+            item = results_model.items[0]
             item_dict = {attr: str(getattr(item, attr)) for attr in dir(item) 
                          if not attr.startswith('_') and not callable(getattr(item, attr))}
             return {"first_item_attributes": item_dict}
@@ -1076,22 +950,20 @@ async def details(item_id: str) -> dict:
             print(f"[FAST-PATH] Bypassing search for homepage item: {getattr(item, 'title', 'Unknown')}")
             
             # Construct a mock search item that moviebox_api can accept
-            def get_fields_dict(obj):
-                if isinstance(obj, dict): return obj
-                if hasattr(obj, 'model_dump'): return obj.model_dump()
-                if hasattr(obj, 'dict'): return obj.dict()
-                return {}
-
             class MockSearchItem(SearchResultsItem):
-                def __init__(self, fields_obj, sid, stype):
+                def __init__(self, fields_dict, sid, stype):
+                    # Use object.__setattr__ to bypass Pydantic's validation 
+                    # while still being an instance of SearchResultsItem
                     object.__setattr__(self, 'id', sid)
                     object.__setattr__(self, 'subjectId', sid)
                     object.__setattr__(self, 'subjectType', stype)
+                    
+                    # detailPath is required for calculating page_url in moviebox_api.models
                     detail_path = "movie" if stype == 1 else "tv"
                     object.__setattr__(self, 'detailPath', detail_path)
                     
-                    f_dict = get_fields_dict(fields_obj)
-                    for k, v in f_dict.items():
+                    # Copy all other fields from original item
+                    for k, v in fields_dict.items():
                         if not hasattr(self, k):
                             object.__setattr__(self, k, v)
             
@@ -1108,13 +980,8 @@ async def details(item_id: str) -> dict:
             
             # Use this mock item
             item_fields = cached.get("item", {})
-            def safe_get(obj, key, default=None):
-                if isinstance(obj, dict): return obj.get(key, default)
-                return getattr(obj, key, default)
-            
-            mid = safe_get(item_fields, 'id')
-            mock_detail_path = safe_get(item_fields, 'detailPath')
-            item = MockSearchItem(item_fields, mid, raw_stype or (1 if subject_type == SubjectType.MOVIES else 2))
+            mock_detail_path = item_fields.get("detailPath")
+            item = MockSearchItem(item_fields, item_fields['id'], raw_stype or (1 if subject_type == SubjectType.MOVIES else 2))
             # If we have a cached detailPath, set it explicitly to override the default "movie"/"tv" logic
             if mock_detail_path:
                 object.__setattr__(item, 'detailPath', mock_detail_path)
@@ -1153,7 +1020,7 @@ async def details(item_id: str) -> dict:
             
         mal_id = None
         if mal_task_idx != -1:
-            mal_res = results_parallel[mal_task_idx] if len(results_parallel) > mal_task_idx else None
+            mal_res = results_parallel[mal_task_idx]
             if not isinstance(mal_res, Exception):
                 mal_id = mal_res
         
@@ -1170,8 +1037,8 @@ async def details(item_id: str) -> dict:
                 print(f"[DEBUG] Found rating in details_model.imdbRatingValue: {imdb_rating}")
         
         # Fallback: Try to get from resData
-        if not imdb_rating_value and (not isinstance(details_model, Exception) and hasattr(details_model, 'resData')):
-            resData = getattr(details_model, "resData", None)
+        if not imdb_rating_value and hasattr(details_model, 'resData'):
+            resData = details_model.resData
             if hasattr(resData, 'imdbRatingValue'):
                 value = getattr(resData, 'imdbRatingValue')
                 if value:
@@ -1204,10 +1071,10 @@ async def details(item_id: str) -> dict:
                     break
         
         # 2. Try nested resData.resource.cover
-        if not poster_url and (not isinstance(details_model, Exception) and hasattr(details_model, 'resData')):
-            resData = getattr(details_model, "resData", None)
+        if not poster_url and hasattr(details_model, 'resData'):
+            resData = details_model.resData
             if hasattr(resData, 'resource'):
-                res = getattr(resData, "resource", None)
+                res = resData.resource
                 if hasattr(res, 'cover') and res.cover and hasattr(res.cover, 'url'):
                     poster_url = str(res.cover.url)
                 elif hasattr(res, 'image') and res.image and hasattr(res.image, 'url'):
@@ -1249,36 +1116,25 @@ async def details(item_id: str) -> dict:
         try:
             seasons_list = None
             # Path 1: details_model.resData.resource.seasons
-            # Path 1: details_model.resData.resource.seasons
-            res_data = getattr(details_model, 'resData', None)
-            if res_data:
-                resource = getattr(res_data, 'resource', None)
-                if resource:
-                    seasons_list = getattr(resource, 'seasons', None)
-                if not seasons_list:
-                    seasons_list = getattr(res_data, 'seasons', None)
-            
+            if hasattr(details_model, 'resData'):
+                if hasattr(details_model.resData, 'resource') and hasattr(details_model.resData.resource, 'seasons'):
+                    seasons_list = details_model.resData.resource.seasons
+                elif hasattr(details_model.resData, 'seasons'):
+                    seasons_list = details_model.resData.seasons
             # Path 2: details_model.resource.seasons
-            if not seasons_list:
-                resource = getattr(details_model, 'resource', None)
-                if resource:
-                    seasons_list = getattr(resource, 'seasons', None)
-            
+            elif hasattr(details_model, 'resource') and hasattr(details_model.resource, 'seasons'):
+                seasons_list = details_model.resource.seasons
             # Path 3: details_model.seasons
-            if not seasons_list:
-                seasons_list = getattr(details_model, 'seasons', None)
-            
+            elif hasattr(details_model, 'seasons'):
+                seasons_list = details_model.seasons
             # Path 4: details_model.item.seasons
-            if not seasons_list:
-                item_obj = getattr(details_model, 'item', None)
-                if item_obj:
-                    seasons_list = getattr(item_obj, 'seasons', None)
-            
+            elif hasattr(details_model, 'item') and hasattr(details_model.item, 'seasons'):
+                seasons_list = details_model.item.seasons
             # Path 5: data.seasons
-            if not seasons_list:
-                data_obj = getattr(details_model, 'data', None)
-                if data_obj:
-                    seasons_list = getattr(data_obj, 'seasons', None)
+            elif hasattr(details_model, 'data'):
+                data_obj = details_model.data
+                if hasattr(data_obj, 'seasons'):
+                    seasons_list = data_obj.seasons
 
             if seasons_list:
                 for season in seasons_list:
@@ -1484,14 +1340,14 @@ async def stream(
                     subject_type = SubjectType.TV_SERIES
                 else:
                     subject_type = SubjectType.MOVIES
-                search_instance = Search(session=session, query=getattr(target_item, 'title', target_item.get('title', 'Unknown') if isinstance(target_item, dict) else 'Unknown'), subject_type=subject_type)
+                search_instance = Search(session=session, query=target_item['title'], subject_type=subject_type)
                 results = await search_instance.get_content_model()
                 
                 if not results.items:
                     raise HTTPException(status_code=404, detail="Content not found via search")
                 
                 # Find the matching item by ID (don't just take first result)
-                original_id = str(getattr(target_item, 'id', target_item.get('id', ''))) or str(getattr(target_item, 'subjectId', ''))
+                original_id = target_item['id']
                 matched_item = None
                 for search_item in results.items:
                     if str(getattr(search_item, 'id', '')) == str(original_id) or str(getattr(search_item, 'subjectId', '')) == str(original_id):
@@ -1702,10 +1558,10 @@ async def moviebox_download(
                     subject_type = SubjectType.TV_SERIES
                 else:
                     subject_type = SubjectType.MOVIES
-                search_instance = Search(session=session, query=getattr(target_item, 'title', target_item.get('title', 'Unknown') if isinstance(target_item, dict) else 'Unknown'), subject_type=subject_type)
+                search_instance = Search(session=session, query=target_item['title'], subject_type=subject_type)
                 results = await search_instance.get_content_model()
                 if results.items:
-                    original_id = str(getattr(target_item, 'id', target_item.get('id', ''))) or str(getattr(target_item, 'subjectId', ''))
+                    original_id = target_item['id']
                     matched_item = None
                     for search_item in results.items:
                         if str(getattr(search_item, 'id', '')) == str(original_id) or str(getattr(search_item, 'subjectId', '')) == str(original_id):
@@ -1798,7 +1654,7 @@ async def moviebox_download(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/proxy-stream")
-async def proxy_stream(request: Request, url: str, source: Optional[str] = None):
+async def proxy_stream(request: Request, url: str, source: str = None):
     """
     Proxies a stream URL through the backend in a single pass.
     Bypasses 403s and supports range requests via browser headers.
@@ -1809,39 +1665,25 @@ async def proxy_stream(request: Request, url: str, source: Optional[str] = None)
     # Forward Range from browser
     client_range = request.headers.get('range')
     
-    # Use the global persistent client to benefit from connection pooling
-    client = get_http_client()
+    # User Request: Fix Format Error (Client closing too early)
+    # We must NOT use 'async with' because StreamingResponse needs the client open!
+    client = httpx.AsyncClient(verify=False, follow_redirects=True)
     
     try:
         last_error = None
         for headers in candidates:
-            # If __clean__ is true, we must ensure NO baggage from persistent client
-            is_clean = headers.pop('__clean__', False)
-            
             if client_range:
                 headers['Range'] = client_range
-            
-            headers.setdefault('Accept-Encoding', 'identity')
-            
-            # TRICK: To bypass default headers in a persistent client, 
-            # we can use a fresh client or explicit None overrides for baggage.
-            request_headers = headers.copy()
-            if is_clean:
-                # Override any potential persistent baggage with empty strings if not provided
-                for h in ['Origin', 'Referer', 'Cookie']:
-                    if h not in request_headers:
-                        request_headers[h] = ""
 
             try:
-                # Check if this is an HLS request via URL
+                # Check if this is an HLS request
                 is_m3u8 = url.split("?")[0].endswith(".m3u8")
                 
                 if is_m3u8:
                     # For playlists, we download and REWRITE absolute URLs to proxy through US
-                    resp = await client.get(url, headers=request_headers, follow_redirects=True, timeout=12.0)
+                    resp = await client.get(url, headers=headers, follow_redirects=True, timeout=15.0)
                     if resp.status_code != 200:
-                        last_error = f"Source returned {resp.status_code} for manifest"
-                        print(f"[PROXY M3U8 FAIL] {resp.status_code} for {url[:50]} with referer {headers.get('Referer')}")
+                        last_error = f"Source returned {resp.status_code}"
                         continue
                     
                     content = resp.text
@@ -1850,7 +1692,6 @@ async def proxy_stream(request: Request, url: str, source: Optional[str] = None)
                     new_lines = []
                     
                     proxy_base = f"{request.url.scheme}://{request.url.netloc}/api/proxy-stream"
-                    import re
                     
                     for line in lines:
                         line = line.strip()
@@ -1860,6 +1701,7 @@ async def proxy_stream(request: Request, url: str, source: Optional[str] = None)
                         
                         if line.startswith("#"):
                             if "URI=" in line:
+                                import re
                                 def wrap_uri(match):
                                     uri = match.group(2)
                                     if not uri.startswith("http"):
@@ -1868,13 +1710,17 @@ async def proxy_stream(request: Request, url: str, source: Optional[str] = None)
                                 line = re.sub(r'(URI)=["\']([^"\']+)["\']', wrap_uri, line)
                             new_lines.append(line)
                         else:
-                            seg_url = line.strip()
-                            if not seg_url.startswith("http"):
-                                seg_url = f"{base_url.rstrip("/")}/{seg_url.lstrip("/")}"
-                            proxied_url = f"{proxy_base}?url={quote(seg_url)}&source={source or ''}"
+                            target_url = line
+                            if not target_url.startswith("http"):
+                                target_url = f"{base_url}/{target_url}"
+                            proxied_url = f"{proxy_base}?url={quote(target_url)}&source={source or ''}"
                             new_lines.append(proxied_url)
                     
                     rewritten_content = "\n".join(new_lines)
+                    
+                    # Close client since we are done
+                    await client.aclose()
+                    
                     return Response(
                         content=rewritten_content,
                         media_type="application/vnd.apple.mpegurl",
@@ -1884,90 +1730,68 @@ async def proxy_stream(request: Request, url: str, source: Optional[str] = None)
                         }
                     )
 
-                # Not explicitly M3U8 -> Try streaming it
+                # Not M3U8 -> Standard Proxy
                 is_srt = ".srt" in url.lower()
                 if is_srt:
-                    resp = await client.get(url, headers=request_headers, follow_redirects=True, timeout=12.0)
+                    # Use regular GET for subtitles (more robust for CloudFront)
+                    resp = await client.get(url, headers=headers, follow_redirects=True, timeout=15.0)
                 else:
-                    req = client.build_request("GET", url, headers=request_headers)
+                    req = client.build_request("GET", url, headers=headers)
                     resp = await client.send(req, stream=True, follow_redirects=True)
                 
-                # Dynamic check for M3U8 via Content-Type
-                ct = resp.headers.get("Content-Type", "").lower()
-                if "mpegurl" in ct or "m3u8" in ct:
-                    content = await resp.read() # Read all and close
-                    await resp.aclose()
-                    
-                    text = content.decode('utf-8', errors='ignore')
-                    base_url = str(resp.url).rsplit('/', 1)[0]
-                    lines = text.splitlines()
-                    new_lines = []
-                    proxy_base = f"{request.url.scheme}://{request.url.netloc}/api/proxy-stream"
-                    import re
-                    
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            new_lines.append(line)
-                            continue
-                        if line.startswith("#"):
-                            if "URI=" in line:
-                                def wrap_uri(match):
-                                    uri = match.group(2)
-                                    if not uri.startswith("http"):
-                                        uri = f"{base_url}/{uri}"
-                                    return f'{match.group(1)}="{proxy_base}?url={quote(uri)}&source={source or ""}"'
-                                line = re.sub(r'(URI)=["\']([^"\']+)["\']', wrap_uri, line)
-                            new_lines.append(line)
-                        else:
-                            seg_url = line.strip()
-                            if not seg_url.startswith("http"):
-                                seg_url = f"{base_url.rstrip("/")}/{seg_url.lstrip("/")}"
-                            proxied_url = f"{proxy_base}?url={quote(seg_url)}&source={source or ''}"
-                            new_lines.append(proxied_url)
-                            
-                    rewritten_content = "\n".join(new_lines)
-                    return Response(
-                        content=rewritten_content,
-                        media_type="application/vnd.apple.mpegurl",
-                        headers={"Access-Control-Allow-Origin": "*", "X-Proxy-Status": "Rewritten-M3U8-CT"}
-                    )
-
                 if resp.status_code >= 400:
-                    status = resp.status_code
                     await resp.aclose()
-                    last_error = f"Source returned {status}"
-                    print(f"[PROXY 403/ERR] {status} for {url[:100]} with referer {headers.get('Referer')}")
+                    last_error = f"Source returned {resp.status_code}"
                     continue
                 
-                # Check for SRT to VTT conversion
-                is_srt = is_srt or "application/x-subrip" in ct
-                if is_srt:
-                    content = await resp.aread() if hasattr(resp, 'aread') else await resp.read()
-                    try: text = content.decode('utf-8')
-                    except: text = content.decode('latin-1', errors='replace')
-                    
-                    vtt_text = srt_to_vtt(text)
-                    await resp.aclose()
-                    return Response(
-                        content=vtt_text,
-                        media_type="text/vtt",
-                        headers={"Access-Control-Allow-Origin": "*", "X-Proxy-Status": "Converted-VTT"}
-                    )
+                # Success!
                 
-                # Standard segment/stream proxy
+                # Intercept SRT for conversion to VTT (Browsers don't support SRT natively in tracks)
+                is_srt = ".srt" in url.lower() or "application/x-subrip" in resp.headers.get("Content-Type", "").lower()
+                
+                if is_srt:
+                    try:
+                        print(f"[SUBTITLE] Processing {url[:100]}")
+                        content = await resp.aread()
+                        try:
+                            text = content.decode('utf-8')
+                        except:
+                            text = content.decode('latin-1', errors='replace')
+                        
+                        vtt_text = srt_to_vtt(text)
+                        await resp.aclose()
+                        await client.aclose()
+                        
+                        print(f"[SUBTITLE] Successfully converted {url[:50]} to VTT")
+                        return Response(
+                            content=vtt_text,
+                            media_type="text/vtt",
+                            headers={
+                                "Access-Control-Allow-Origin": "*",
+                                "X-Proxy-Status": "Converted-SRT-to-VTT"
+                            }
+                        )
+                    except Exception as sub_e:
+                        print(f"[SUBTITLE ERROR] Conversion failed: {sub_e}")
+                        traceback.print_exc()
+                        # Fallback: if conversion fails, return raw if possible or raise
+                        raise HTTPException(status_code=500, detail=f"Subtitle conversion error: {str(sub_e)}")
+                
                 excluded_headers = ["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "content-disposition"]
                 res_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_headers}
                 res_headers.update({
                     "Access-Control-Allow-Origin": "*",
-                    "X-Proxy-Status": "Streaming"
+                    "Connection": "keep-alive",
+                    "X-Proxy-Status": "One-Shot"
                 })
                 if "Content-Length" in resp.headers:
                     res_headers["Content-Length"] = resp.headers["Content-Length"]
 
                 from starlette.background import BackgroundTask
+                
                 async def cleanup():
                     await resp.aclose()
+                    await client.aclose()
 
                 return StreamingResponse(
                     resp.aiter_raw(),
@@ -1976,24 +1800,200 @@ async def proxy_stream(request: Request, url: str, source: Optional[str] = None)
                     background=BackgroundTask(cleanup)
                 )
 
-            except Exception as candidate_e:
-                print(f"[PROXY CANDIDATE FAILED] {candidate_e} for {url[:50]}")
-                last_error = str(candidate_e)
+            except Exception as e:
+                print(f"[PROXY ATTEMPT FAILED] {e} for {url[:50]}")
+                last_error = str(e)
                 continue
                 
-        # Final Fallback
-        return RedirectResponse(url=url, status_code=307)
+        # If we exit loop without returning
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"Proxy failed: {last_error or 'Unknown error'}")
 
+    except HTTPException:
+        # Re-raise HTTPExceptions as-is to preserve status codes (avoid 500)
+        raise
     except Exception as e:
+        # Fallback closure for actual crashes
+        if 'client' in locals():
+            try: await client.aclose()
+            except: pass
         print(f"[PROXY FATAL] {e}")
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 
+# --- HiAnime Section ---
 
-# --- Anime Iframe Proxy ---
+@router.get("/anime/home")
+async def get_anime_home():
+    try:
+        url = f"{ANIME_API_BASE}/home"
+        print(f"[HiAnime] Requesting Home: {url}")
+        client = get_http_client()
+        response = await client.get(url, timeout=30.0)
+        if response.status_code != 200:
+            print(f"[HiAnime] Home API error {response.status_code}: {response.text[:200]}")
+            raise HTTPException(status_code=response.status_code, detail=f"Upstream error: {response.status_code}")
+        
+        try:
+            data = response.json()
+            normalized_groups = []
+            if data.get('status') == 200 and data.get('data'):
+                d = data['data']
+                if d.get('spotlightAnimes'):
+                    normalized_groups.append({
+                        "title": "Spotlight",
+                        "items": [{
+                            "id": a.get('id'),
+                            "title": a.get('name'),
+                            "poster_url": a.get('poster'),
+                            "year": a.get('type') or "Anime",
+                            "type": "anime",
+                            "source": "hianime"
+                        } for a in d['spotlightAnimes']]
+                    })
+                if d.get('trendingAnimes'):
+                    normalized_groups.append({
+                        "title": "Trending",
+                        "items": [{
+                            "id": a.get('id'),
+                            "title": a.get('name'),
+                            "poster_url": a.get('poster'),
+                            "year": a.get('type') or "Anime",
+                            "type": "anime",
+                            "source": "hianime"
+                        } for a in d['trendingAnimes']]
+                    })
+                if d.get('latestEpisodeAnimes'):
+                    normalized_groups.append({
+                        "title": "Latest Episodes",
+                        "items": [{
+                            "id": a.get('id'),
+                            "title": a.get('name'),
+                            "poster_url": a.get('poster'),
+                            "year": a.get('type') or "Anime",
+                            "type": "anime",
+                            "source": "hianime"
+                        } for a in d['latestEpisodeAnimes']]
+                    })
+                if d.get('topUpcomingAnimes'):
+                    normalized_groups.append({
+                        "title": "Upcoming",
+                        "items": [{
+                            "id": a.get('id'),
+                            "title": a.get('name'),
+                            "poster_url": a.get('poster'),
+                            "year": a.get('type') or "Anime",
+                            "type": "anime",
+                            "source": "hianime"
+                        } for a in d['topUpcomingAnimes']]
+                    })
+            return normalized_groups
+        except Exception as json_err:
+            print(f"[HiAnime] Home JSON Parse error: {json_err} | Body: {response.text[:500]}")
+            raise HTTPException(status_code=500, detail="Malformed upstream response")
+    except Exception as e:
+        print(f"HiAnime Home fatal error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/anime/search")
+async def search_anime(query: str, page: int = 1):
+    try:
+        url = f"{ANIME_API_BASE}/search?q={quote(query)}&page={page}"
+        print(f"[HiAnime] Searching: {url}")
+        client = get_http_client()
+        response = await client.get(url, timeout=30.0)
+        if response.status_code != 200:
+            print(f"[HiAnime] Search API error {response.status_code}: {response.text[:200]}")
+            raise HTTPException(status_code=response.status_code, detail=f"Upstream error: {response.status_code}")
+        
+        try:
+            data = response.json()
+            # Normalize to flat list for frontend
+            results = []
+            if data.get('status') == 200 and data.get('data'):
+                animes = data['data'].get('animes', [])
+                for a in animes:
+                    results.append({
+                        "id": a.get('id'),
+                        "title": a.get('name'),
+                        "poster_url": a.get('poster'),
+                        "year": a.get('type') or "Anime",
+                        "type": "anime",
+                        "source": "hianime"
+                    })
+            return results
+        except Exception as json_err:
+            print(f"[HiAnime] Search JSON Parse error: {json_err} | Body: {response.text[:500]}")
+            raise HTTPException(status_code=500, detail="Malformed upstream response")
+    except Exception as e:
+        print(f"HiAnime Search fatal error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/anime/details/{anime_id}")
+async def get_anime_details(anime_id: str):
+    try:
+        about_url = f"{ANIME_API_BASE}/anime/{anime_id}"
+        client = get_http_client()
+        about_res = await client.get(about_url, timeout=30.0)
+        
+        if about_res.status_code != 200:
+            print(f"[HiAnime] Details API error {about_res.status_code} for {anime_id}")
+            return {"error": f"API returned {about_res.status_code}", "status": about_res.status_code, "id": anime_id}
+
+        try:
+            about_data = about_res.json()
+        except Exception as e:
+            print(f"[HiAnime] JSON error for {anime_id}: {e}")
+            return {"error": "Invalid JSON from API", "status": 500, "id": anime_id}
+        
+        if about_data.get("status") == 200 and "data" in about_data:
+            anime = about_data["data"]["anime"]
+            info = anime.get("info", {})
+            more_info = anime.get("moreInfo", {})
+            
+            return {
+                "id": anime_id,
+                "title": info.get("name", "Unknown"),
+                "plot": info.get("description", ""),
+                "poster_url": info.get("poster", ""),
+                "rating": more_info.get("status", "N/A"),
+                "rating_value": float(anime.get("stats", {}).get("rating", 0)) if anime.get("stats", {}).get("rating") else 0,
+                "year": more_info.get("aired", "N/A"),
+                "type": "anime",
+                "episodes_data": about_data["data"].get("seasons") or []
+            }
+        
+        return {"error": "Failed to fetch anime details", "status": about_data.get("status"), "id": anime_id}
+    except Exception as e:
+        print(f"HiAnime Details error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/anime/episodes/{anime_id}")
+async def get_anime_episodes(anime_id: str):
+    try:
+        url = f"{ANIME_API_BASE}/episodes"
+        client = get_http_client()
+        response = await client.get(url, params={"id": anime_id}, timeout=30.0)
+        return response.json()
+    except Exception as e:
+        print(f"HiAnime Episodes error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/anime/servers")
+async def get_anime_servers(episode_id: str):
+    try:
+        url = f"{ANIME_API_BASE}/servers"
+        client = get_http_client()
+        response = await client.get(url, params={"episodeId": episode_id}, timeout=30.0)
+        return response.json()
+    except Exception as e:
+        print(f"HiAnime Servers error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/iframe-proxy")
 async def iframe_proxy(url: str):
@@ -2001,10 +2001,6 @@ async def iframe_proxy(url: str):
     Serves a minimal HTML page containing the target iframe.
     Includes AGGRESSIVE ad-blocking to prevent ALL redirects.
     """
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    domain = parsed.netloc
-    
     html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2025,7 +2021,7 @@ async def iframe_proxy(url: str):
             'use strict';
             console.log("[AdBlock] STRICT MODE ACTIVE");
             
-            var ALLOWED = ['megaplay.buzz', 'megacloud.tv', 'megacloud.blog', 'animepahe.com', 'youtube.com', 'youtube-nocookie.com', 'localhost', '127.0.0.1', '{domain}'];
+            var ALLOWED = ['megaplay.buzz', 'megacloud.tv', 'megacloud.blog', 'hianime.to', 'localhost', '127.0.0.1'];
             
             function isAllowed(urlStr) {{
                 try {{
@@ -2043,8 +2039,12 @@ async def iframe_proxy(url: str):
             }};
             
             // 2. BLOCK location changes
+            // 2. BLOCK location changes (Safe method)
+            // Cannot redefine window.location directly in modern browsers
             window.addEventListener('beforeunload', function(e) {{
-                // heuristic fallback
+                // heuristic: if we didn't initiate a click on an allowed link, it might be a redirect
+                // But this is hard to detect perfectly. 
+                // For now, relies on click hijacking (below) to stop new tabs.
             }});
             
             // 3. BLOCK top/parent navigation
@@ -2059,66 +2059,102 @@ async def iframe_proxy(url: str):
             document.addEventListener('click', function(e) {{
                 var t = e.target;
                 
+                // Block clicks on invisible overlays (ad trick)
                 var style = window.getComputedStyle(t);
                 if (style.opacity === '0' || style.visibility === 'hidden' || 
                     (style.position === 'fixed' && parseInt(style.zIndex) > 1000)) {{
                     e.preventDefault();
                     e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    console.log("[AdBlock] Blocked invisible overlay click");
                     return false;
                 }}
                 
+                // Block external links
                 while (t && t.tagName !== 'A') {{ t = t.parentElement; }}
                 if (t && t.href && !isAllowed(t.href)) {{
                     e.preventDefault();
                     e.stopPropagation();
+                    e.stopImmediatePropagation();
                     console.log("[AdBlock] Blocked link:", t.href);
                     return false;
                 }}
             }}, true);
             
-            // 5. BLOCK mousedown/mouseup
-            ['mousedown', 'mouseup'].forEach(function(evt) {{
+            // 5. BLOCK mousedown/mouseup (some ads use these)
+            ['mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach(function(evt) {{
                 document.addEventListener(evt, function(e) {{
                     var t = e.target;
                     while (t && t.tagName !== 'A') {{ t = t.parentElement; }}
                     if (t && t.href && !isAllowed(t.href)) {{
                         e.preventDefault();
                         e.stopPropagation();
+                        e.stopImmediatePropagation();
                         return false;
                     }}
                 }}, true);
             }});
             
-            // 6. BLOCK form submissions
+            // 6. BLOCK form submissions to external sites
             document.addEventListener('submit', function(e) {{
                 var form = e.target;
                 if (form.action && !isAllowed(form.action)) {{
                     e.preventDefault();
+                    console.log("[AdBlock] Blocked form submit:", form.action);
                     return false;
                 }}
             }}, true);
             
-            // 7. INTERCEPT timeouts
+            // 7. INTERCEPT and BLOCK setTimeout/setInterval redirects
             var _setTimeout = window.setTimeout;
+            var _setInterval = window.setInterval;
             window.setTimeout = function(fn, delay) {{
-                if (typeof fn === 'string' && (fn.includes('location') || fn.includes('open'))) return 0;
+                if (typeof fn === 'string' && (fn.includes('location') || fn.includes('open') || fn.includes('href'))) {{
+                    console.log("[AdBlock] Blocked setTimeout redirect");
+                    return 0;
+                }}
                 return _setTimeout.apply(window, arguments);
             }};
+            window.setInterval = function(fn, delay) {{
+                if (typeof fn === 'string' && (fn.includes('location') || fn.includes('open') || fn.includes('href'))) {{
+                    console.log("[AdBlock] Blocked setInterval redirect");
+                    return 0;
+                }}
+                return _setInterval.apply(window, arguments);
+            }};
             
-            // 8. BLOCK beforeunload
+            // 8. BLOCK beforeunload (prevents "are you sure" popups)
             window.onbeforeunload = null;
+            window.addEventListener('beforeunload', function(e) {{
+                delete e.returnValue;
+            }});
             
-            // 9. Remove ad elements
+            // 9. Remove ad elements on load
             function removeAds() {{
-                var selectors = ['.ad', '.ads', '.advert', '.popup', '.overlay', '[class*="ad-"]', 'iframe[src*="ads"]'];
+                var selectors = ['.ad', '.ads', '.advert', '.popup', '.overlay', '[class*="ad-"]', 
+                                 '[class*="popup"]', '[id*="ad-"]', '[id*="popup"]', 'iframe[src*="ads"]'];
                 selectors.forEach(function(sel) {{
                     document.querySelectorAll(sel).forEach(function(el) {{
-                        if (!el.src || !isAllowed(el.src)) el.remove();
+                        if (!el.src || !isAllowed(el.src)) {{
+                            el.remove();
+                        }}
                     }});
                 }});
             }}
+            document.addEventListener('DOMContentLoaded', removeAds);
             setInterval(removeAds, 2000);
             
+            // 10. BLOCK postMessage redirects
+            window.addEventListener('message', function(e) {{
+                if (e.data && typeof e.data === 'string') {{
+                    if (e.data.includes('redirect') || e.data.includes('location') || e.data.includes('http')) {{
+                        console.log("[AdBlock] Blocked postMessage:", e.data.substring(0, 100));
+                        e.stopImmediatePropagation();
+                    }}
+                }}
+            }}, true);
+            
+            console.log("[AdBlock] All protections loaded successfully");
         }})();
     </script>
 </head>
@@ -2138,9 +2174,48 @@ async def iframe_proxy(url: str):
     
     return Response(content=html_content, media_type="text/html")
 
+@router.get("/anime/sources")
+async def get_anime_sources(episode_id: str, server: str = "vidcloud", category: str = "sub"):
+    """
+    Fetches anime stream sources, attempting multiple servers and providers if needed.
+    """
+    # providers = [
+    #     "https://hianime-api.vercel.app/api/v1",
+    #     ANIME_API_BASE
+    # ]
+    provider = ANIME_API_BASE
+    
+    # User Request: Prioritize hd-2, but keep backups to prevent 404s.
+    # We try hd-2 first, then others if it fails.
+    servers = ["hd-2", "megacloud", "vidcloud"] 
+    
+    # If a specific server was requested via `server` param that isn't in our list, 
+    # we could add it, but for now strict optimization.
 
+    client = get_http_client()
+    for s in servers:
+        try:
+            url = f"{provider}/episode/sources?animeEpisodeId={quote(episode_id)}&server={s}&category={category}"
+            response = await client.get(url, timeout=15.0)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == 200 and data.get("data", {}).get("sources"):
+                    print(f"[HiAnime] Success with {s} on {provider}")
+                    
+                    # If any source is Megaplay, ensure it's marked as 'embed'
+                    for src in data["data"]["sources"]:
+                        if "megaplay.buzz" in src.get("url", ""):
+                            src["type"] = "embed"
+                    return data
+                else:
+                    print(f"[HiAnime] API returned 200 but no sources for {s} on {provider}: {data.get('message')}")
+            else:
+                print(f"[HiAnime] Provider {provider} returned {response.status_code} for {s}")
+        except Exception as e:
+            print(f"[HiAnime] Error fetching from {provider} for {s}: {e}")
+            continue
 
-
+    raise HTTPException(status_code=404, detail="No working stream sources found for this episode.")
 
 # --- CineCLI & Proxy Routes ---
 
@@ -2163,69 +2238,298 @@ async def cinecli_details(movie_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Movie not found")
     return details
 
+# --- Ani-CLI (Allmanga/Gogo) Routes ---
+from anicli_service import AniCliService
 
-
-
-@router.get("/proxy/download")
-async def proxy_download(url: str, filename: str = "download.mp4", source: Optional[str] = None):
+@router.get("/anicli/search")
+async def anicli_search(query: str) -> dict:
     """
-    Forces a download of the remote URL, using proxy headers to bypass 403s.
+    Search for anime via Ani-CLI (GogoAnime scraper).
     """
-    print(f"[DOWNLOAD START] URL: {url[:100]}... Source: {source}")
-    candidates = get_source_headers(url, source)
-    last_err = "No candidates"
+    results = await AniCliService.search(query)
+    return {"results": results}
+
+@router.get("/anicli/details/{anime_id}")
+async def anicli_details(anime_id: str) -> dict:
+    """
+    Get details and episodes for an Ani-CLI anime.
+    """
+    details = await AniCliService.get_details(anime_id)
+    if not details:
+        raise HTTPException(status_code=404, detail="Anime not found")
+    return details
+
+@router.get("/anicli/stream")
+async def anicli_stream(episode_id: str) -> dict:
+    """
+    Get stream URL (embed) for an Ani-CLI episode.
+    """
+    url = await AniCliService.get_stream_url(episode_id)
+    if not url:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    return {"url": url}
+
+@router.get("/anicli/home")
+async def anicli_home() -> dict:
+    """
+    Get homepage content for Ani-CLI (recent releases).
+    """
+    results = await AniCliService.get_homepage()
+    return {"results": results}
+
+
+@router.get("/iframe-proxy")
+async def iframe_proxy(url: str, request: Request):
+    """
+    Proxies an iframe page (like Megaplay) to bypass Referer checks.
+    Injects <base> tag to ensure relative links (JS/CSS) work.
+    """
+    client = get_http_client()
     
-    # Use a high-quality client configuration
-    client = httpx.AsyncClient(verify=False, follow_redirects=True, timeout=120.0)
+    # Get proper headers (referer spoofing)
+    headers = {
+        'User-Agent': DEFAULT_HEADERS['User-Agent'],
+        'Referer': 'https://hianime.to/',
+        'Origin': 'https://hianime.to'
+    }
     
-    for i, headers in enumerate(candidates):
-        try:
-            print(f"[DOWNLOAD ATTEMPT {i+1}] Using Referer: {headers.get('Referer')}")
-            req = client.build_request("GET", url, headers=headers)
-            r = await client.send(req, stream=True, follow_redirects=True)
+    # Specific handling for known providers
+    if "megaplay.buzz" in url:
+        headers['Referer'] = 'https://megaplay.buzz/'
+        headers['Origin'] = 'https://megaplay.buzz'
+        
+    try:
+        resp = await client.get(url, headers=headers, follow_redirects=True)
+        content = resp.text
+        
+        # Inject <base> tag right after <head>
+        base_to_inject = f'<base href="{url}">'
+        if "<head>" in content:
+            content = content.replace("<head>", f"<head>{base_to_inject}", 1)
+        # Fallback for upper case
+        elif "<HEAD>" in content:
+            content = content.replace("<HEAD>", f"<HEAD>{base_to_inject}", 1)
+        else:
+            # If no head, just prepend (browsers are lenient)
+            content = base_to_inject + content
             
-            if r.status_code >= 400:
-                print(f"[DOWNLOAD ATTEMPT {i+1} FAILED] Status: {r.status_code}")
-                await r.aclose()
-                last_err = f"Status {r.status_code}"
+        return Response(content=content, media_type="text/html")
+        
+    except Exception as e:
+        print(f"Iframe proxy failed: {e}")
+        return Response(content=f"Proxy Error: {e}", status_code=500)
+
+
+@router.get("/proxy-stream")
+async def proxy_stream(request: Request, url: str, source: str = None):
+    """
+    Proxies a stream URL through the backend in a single pass.
+    Bypasses 403s and supports range requests via browser headers.
+    """
+    # Cycle through headers until success
+    candidates = get_source_headers(url, source)
+    
+    # Forward Range from browser
+    client_range = request.headers.get('range')
+    
+    # Use the global persistent client to benefit from connection pooling and reuse TLS handshakes
+    client = get_http_client()
+    
+    try:
+        last_error = None
+        for headers in candidates:
+            if client_range:
+                headers['Range'] = client_range
+
+            try:
+                # Check if this is an HLS request
+                # Combine robust checks: URL extension OR Content-Type (from previous check, but here we check URL first optimization)
+                is_m3u8 = url.split("?")[0].endswith(".m3u8")
+                
+                if is_m3u8:
+                    # For playlists, we download and REWRITE absolute URLs to proxy through US
+                    resp = await client.get(url, headers=headers, follow_redirects=True, timeout=15.0)
+                    if resp.status_code != 200:
+                        last_error = f"Source returned {resp.status_code}"
+                        continue
+                    
+                    content = resp.text
+                    base_url = str(resp.url).rsplit('/', 1)[0]
+                    lines = content.splitlines()
+                    new_lines = []
+                    
+                    # Use the endpoint that this function is mounted on
+                    proxy_base = f"{request.url.scheme}://{request.url.netloc}/api/proxy-stream"
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            new_lines.append(line)
+                            continue
+                        
+                        if line.startswith("#"):
+                            if "URI=" in line:
+                                import re
+                                def wrap_uri(match):
+                                    uri = match.group(2)
+                                    if not uri.startswith("http"):
+                                        uri = f"{base_url}/{uri}"
+                                    return f'{match.group(1)}="{proxy_base}?url={quote(uri)}&source={source or ""}"'
+                                line = re.sub(r'(URI)=["\']([^"\']+)["\']', wrap_uri, line)
+                            new_lines.append(line)
+                        else:
+                            target_url = line
+                            if not target_url.startswith("http"):
+                                target_url = f"{base_url}/{target_url}"
+                            proxied_url = f"{proxy_base}?url={quote(target_url)}&source={source or ''}"
+                            new_lines.append(proxied_url)
+                    
+                    rewritten_content = "\n".join(new_lines)
+                    
+                    # No need to close the global client
+
+                    
+                    return Response(
+                        content=rewritten_content,
+                        media_type="application/vnd.apple.mpegurl",
+                        headers={
+                            "Access-Control-Allow-Origin": "*",
+                            "X-Proxy-Status": "Rewritten-M3U8"
+                        }
+                    )
+
+                # Not M3U8 -> Standard Proxy
+                is_srt = ".srt" in url.lower()
+                if is_srt:
+                    # Use regular GET for subtitles (worked in standalone test)
+                    resp = await client.get(url, headers=headers, follow_redirects=True, timeout=15.0)
+                else:
+                    req = client.build_request("GET", url, headers=headers)
+                    resp = await client.send(req, stream=True, follow_redirects=True)
+                
+                # Check if Content-Type indicates M3U8 even if extension didn't (Second Chance)
+                ct = resp.headers.get("Content-Type", "").lower()
+                if "mpegurl" in ct or "m3u8" in ct:
+                    # It IS M3U8, but we started streaming it.
+                    # We need to read it and rewrite.
+                    content = await resp.read() # Read all
+                    await resp.aclose() # Close stream
+                    
+                    text = content.decode('utf-8', errors='ignore')
+                    base_url = str(resp.url).rsplit('/', 1)[0]
+                    lines = text.splitlines()
+                    new_lines = []
+                    proxy_base = f"{request.url.scheme}://{request.url.netloc}/api/proxy-stream"
+                    
+                    import re
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            new_lines.append(line)
+                            continue
+                        if line.startswith("#"):
+                            if "URI=" in line:
+                                def wrap_uri(match):
+                                    uri = match.group(2)
+                                    if not uri.startswith("http"):
+                                        uri = f"{base_url}/{uri}"
+                                    return f'{match.group(1)}="{proxy_base}?url={quote(uri)}&source={source or ""}"'
+                                line = re.sub(r'(URI)=["\']([^"\']+)["\']', wrap_uri, line)
+                            new_lines.append(line)
+                        else:
+                            target_url = line
+                            if not target_url.startswith("http"):
+                                target_url = f"{base_url}/{target_url}"
+                            proxied_url = f"{proxy_base}?url={quote(target_url)}&source={source or ''}"
+                            new_lines.append(proxied_url)
+                            
+                    rewritten_content = "\n".join(new_lines)
+                    # No need to close the global client
+
+                    
+                    return Response(
+                        content=rewritten_content,
+                        media_type="application/vnd.apple.mpegurl",
+                        headers={
+                            "Access-Control-Allow-Origin": "*",
+                            "X-Proxy-Status": "Rewritten-M3U8-CT"
+                        }
+                    )
+                
+                if resp.status_code >= 400:
+                    print(f"[PROXY ERROR] {resp.status_code} for {url[:50]}")
+                    await resp.aclose()
+                    last_error = f"Source returned {resp.status_code}"
+                    continue
+                
+                # Success!
+                excluded_headers = ["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "content-disposition"]
+                res_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_headers}
+                res_headers.update({
+                    "Access-Control-Allow-Origin": "*",
+                    "Connection": "keep-alive",
+                    "X-Proxy-Status": "One-Shot"
+                })
+                if "Content-Length" in resp.headers:
+                    res_headers["Content-Length"] = resp.headers["Content-Length"]
+
+                from starlette.background import BackgroundTask
+                
+                async def cleanup():
+                    await resp.aclose()
+                    # Global client is NOT closed here
+
+
+                return StreamingResponse(
+                    resp.aiter_raw(),
+                    status_code=resp.status_code,
+                    headers=res_headers,
+                    background=BackgroundTask(cleanup)
+                )
+
+            except Exception as e:
+                print(f"[PROXY ATTEMPT FAILED] {e} for {url[:50]}")
+                last_error = str(e)
                 continue
                 
-            ct = r.headers.get("Content-Type", "").lower()
-            cl = r.headers.get("Content-Length", "Unknown")
-            print(f"[DOWNLOAD SUCCESS] Status: {r.status_code}, Type: {ct}, Length: {cl}")
+        # If we exit loop without returning
+        # No need to close the global client
 
-            # If it's a manifest/text but we expected video, it's likely an HLS file
-            if "mpegurl" in ct or "m3u8" in url.lower():
-                print("[DOWNLOAD WARNING] This appears to be an HLS manifest, not a direct MP4.")
+        raise HTTPException(status_code=502, detail=f"Proxy failed: {last_error}")
 
-            res_headers = {
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Type": r.headers.get("Content-Type", "application/octet-stream"),
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "no-cache"
-            }
-            if "Content-Length" in r.headers:
-                res_headers["Content-Length"] = r.headers["Content-Length"]
-                
-            from fastapi.background import BackgroundTask
-            async def cleanup():
-                await r.aclose()
-                await client.aclose()
-                print(f"[DOWNLOAD FINISHED] {filename}")
-                
-            return StreamingResponse(
-                r.aiter_bytes(),
-                headers=res_headers,
-                background=BackgroundTask(cleanup)
-            )
-        except Exception as e:
-            print(f"[DOWNLOAD ATTEMPT {i+1} ERROR] {e}")
-            last_err = str(e)
-            continue
+    except Exception as e:
+        # Fallback closure
+        # No need to close the global client
+
+        print(f"[PROXY FATAL] {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/proxy/download")
+async def proxy_download(url: str, filename: str = "download.mp4"):
+    """
+    Forces a download of the remote URL.
+    """
+    client = get_http_client()
+    try:
+        req = client.build_request("GET", url, headers={"User-Agent": DEFAULT_HEADERS["User-Agent"]})
+        r = await client.send(req, stream=True)
+        
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": r.headers.get("Content-Type", "application/octet-stream")
+        }
+        if "Content-Length" in r.headers:
+            headers["Content-Length"] = r.headers["Content-Length"]
             
-    await client.aclose()
-    print(f"[DOWNLOAD FATAL] All candidates failed. Last error: {last_err}")
-    raise HTTPException(status_code=500, detail=f"Download failed: {last_err}")
+        return StreamingResponse(
+            r.aiter_bytes(),
+            headers=headers,
+            background=asyncio.create_task(r.aclose())
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/anime/skip-times")
 async def get_skip_times(mal_id: int, episode_number: float):
@@ -2293,36 +2597,83 @@ async def manga_save_local(chapter_id: str, manga_title: str, chapter_title: str
     return result
 
 @router.get("/manga/image-proxy")
-async def manga_image_proxy(url: str, referer: Optional[str] = None):
+async def manga_image_proxy(url: str, referer: str = "https://mangapill.com/"):
     """
-    Proxies images with ultra-robust header cycling to bypass hotlinking.
+    Proxies images with a customizable referer to bypass hotlinking protections.
+    Adds CORS and CORP headers to ensure browsers allow embedding.
     """
     if not url or url == "null":
         return Response(content="Invalid URL", status_code=400)
         
-    # Cycle through common referers if none provided or for retrying
-    refs = [referer] if referer else []
-    if "animepahe" in url.lower():
-        if "https://animepahe.com/" not in refs: refs.append("https://animepahe.com/")
-    if "mangapill" in url.lower():
-        if "https://mangapill.com/" not in refs: refs.append("https://mangapill.com/")
+    headers = {
+        "Referer": referer,
+        "User-Agent": DEFAULT_HEADERS["User-Agent"]
+    }
+    client = get_http_client()
+    try:
+        resp = await client.get(url, headers=headers, follow_redirects=True, timeout=15.0)
+        if resp.status_code != 200:
+            print(f"[IMAGE PROXY] Failed to fetch {url[:50]}... Status: {resp.status_code}")
+            return Response(content=f"Error {resp.status_code}", status_code=resp.status_code)
         
-    # Standard fallbacks
-    for r in ["https://google.com/", "https://duckduckgo.com/", ""]:
-        if r not in refs: refs.append(r)
+        return Response(
+            content=resp.content,
+            media_type=resp.headers.get("Content-Type", "image/jpeg"),
+            headers={
+                "Cache-Control": "public, max-age=31536000",
+                "Access-Control-Allow-Origin": "*",
+                "Cross-Origin-Resource-Policy": "cross-origin",
+                "X-Proxy-Status": "Success"
+            }
+        )
+    except Exception as e:
+        print(f"[IMAGE PROXY FATAL] {e} for {url[:50]}")
+        return Response(content=str(e), status_code=500)
+
+@router.get("/anime/image-proxy")
+async def anime_image_proxy(url: str):
+    """
+    Dedicated proxy for Anime posters (AnimePahe/Kwik).
+    Exhaustively tries multiple referer variants to bypass hotlinking protection.
+    """
+    if not url or url == "null":
+        return Response(content="Invalid URL", status_code=400)
+    
+    url_lower = url.lower()
+    variants = []
+    
+    # 1. Standard HiAnime/AnimeSama variants
+    if "anime-sama" in url_lower:
+        variants.append({"Referer": "https://anime-sama.me/"})
+    
+    # 2. AnimePahe/Kwik variants (The most common source of 403)
+    if "animepahe" in url_lower or "kwik" in url_lower or "i.animepahe.si" in url_lower:
+        variants.append({"Referer": "https://animepahe.com/"})
+        variants.append({"Referer": "https://animepahe.ru/"})
+        variants.append({"Referer": "https://animepahe.org/"})
+        variants.append({"Referer": "https://animepahe.ru"})
+        variants.append({"Referer": "https://animepahe.com"})
+        variants.append({"Referer": "https://kwik.cx/", "Origin": "https://kwik.cx"})
+        # Self-referer fallback
+        try:
+             from urllib.parse import urlparse
+             parsed = urlparse(url)
+             variants.append({"Referer": f"{parsed.scheme}://{parsed.netloc}/"})
+        except: pass
+
+    # Always add a generic fallback
+    variants.append({"Referer": ""})
 
     client = get_http_client()
-    last_status = 403
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     
-    for ref in refs:
-        headers = {
-            "Referer": ref,
-            "User-Agent": DEFAULT_HEADERS["User-Agent"],
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
+    last_status = 0
+    for headers in variants:
         try:
-            resp = await client.get(url, headers=headers, follow_redirects=True, timeout=10.0)
+            full_headers = headers.copy()
+            full_headers["User-Agent"] = ua
+            resp = await client.get(url, headers=full_headers, follow_redirects=True, timeout=12.0)
+            
             if resp.status_code == 200:
                 return Response(
                     content=resp.content,
@@ -2331,36 +2682,27 @@ async def manga_image_proxy(url: str, referer: Optional[str] = None):
                         "Cache-Control": "public, max-age=31536000",
                         "Access-Control-Allow-Origin": "*",
                         "Cross-Origin-Resource-Policy": "cross-origin",
-                        "X-Proxy-Ref": ref or "None"
+                        "X-Proxy-Type": "Anime",
+                        "X-Proxy-Status": f"Success-Ref-{headers.get('Referer')}"
                     }
                 )
             last_status = resp.status_code
+            if last_status != 403: # If not forbidden, maybe it's 404/500, no use retrying refs
+                break
         except Exception as e:
-            print(f"[IMAGE PROXY RETRY] Error with ref {ref}: {e}")
-            continue
+            print(f"[ANIME PROXY ATTEMPT ERROR] {e}")
 
-    return Response(content=f"Hotlink bypass failed: {last_status}", status_code=last_status)
+    # If all variants failed
+    print(f"[ANIME PROXY FATAL] All variants failed for {url[:60]}... Last Status: {last_status}")
+    return Response(content=f"Error {last_status}", status_code=last_status if last_status else 500)
 
 @router.get("/image-proxy")
-async def generic_image_proxy(url: str, referer: Optional[str] = None):
+async def generic_image_proxy(url: str, referer: str = None):
     """
-    General purpose image proxy with automatic referer detection.
+    Alias for manga_image_proxy but defaults to no referer if not provided.
+    Useful for News section images or other external resources.
     """
-    ref = referer
-    if not ref:
-        url_low = url.lower()
-        if "animepahe" in url_low: 
-            # Detect which animepahe domain to use as referer
-            if ".si" in url_low: ref = "https://animepahe.si/"
-            elif ".ru" in url_low: ref = "https://animepahe.ru/"
-            elif ".org" in url_low: ref = "https://animepahe.org/"
-            else: ref = "https://animepahe.com/"
-        elif "mangapill" in url_low: ref = "https://mangapill.com/"
-        elif "animenewsnetwork" in url_low: ref = "https://www.animenewsnetwork.com/"
-        elif "moviebox" in url_low: ref = "https://www.moviebox.com/"
-        else: ref = "https://www.google.com/"
-        
-    return await manga_image_proxy(url, ref)
+    return await manga_image_proxy(url, referer or "https://www.animenewsnetwork.com/")
 
 @router.get("/system/status")
 async def system_status():

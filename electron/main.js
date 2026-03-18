@@ -7,10 +7,6 @@ let mainWindow;
 let backendProcess;
 let nodeBridgeProcess;
 
-app.commandLine.appendSwitch('enable-features', 'CastMediaRouteProvider');
-app.commandLine.appendSwitch('load-media-router-component-extension', '1');
-app.commandLine.appendSwitch('enable-media-router');
-
 function startNodeBridge() {
     if (nodeBridgeProcess && !nodeBridgeProcess.killed) {
         return;
@@ -107,88 +103,54 @@ function startNodeBridge() {
     }
 }
 
-let backendRestartCount = 0;
-const MAX_BACKEND_RESTARTS = 5;
-
 function startBackend() {
-    const isPackaged = app.isPackaged;
-    const backendDir = isPackaged
-        ? path.join(process.resourcesPath, 'backend')
-        : path.join(__dirname, '..');
-    const executablePath = isPackaged
-        ? path.join(backendDir, 'backend.exe')
-        : 'python';
-    const finalArgs = isPackaged
-        ? []
-        : ['-m', 'uvicorn', 'backend.main:app', '--host', '0.0.0.0', '--port', '8000'];
+    console.log('Starting Genga Movie backend...');
 
+    const isPackaged = app.isPackaged;
+    const backendDir = isPackaged ? path.join(process.resourcesPath, 'backend') : path.join(__dirname, '..');
+    const executablePath = isPackaged ? path.join(backendDir, 'backend.exe') : 'python';
+    // For standalone backend.exe, we rely on the hardcoded 0.0.0.0 in main.py
+    // For dev mode, we explicitly set it here.
+    const finalArgs = isPackaged ? [] : ['-m', 'uvicorn', 'backend.main:app', '--host', '0.0.0.0', '--port', '8000'];
+
+    const fs = require('fs');
     if (isPackaged && !fs.existsSync(executablePath)) {
-        console.error(`[BACKEND] CRITICAL: backend.exe NOT FOUND at ${executablePath}`);
-        // List what IS there
-        try {
-            const files = fs.readdirSync(backendDir);
-            console.error(`[BACKEND] Contents of ${backendDir}:`, files);
-        } catch (e) {
-            console.error(`[BACKEND] Cannot read dir ${backendDir}:`, e.message);
-        }
+        console.error(`CRITICAL: Backend NOT FOUND at ${executablePath}`);
         return;
     }
 
-    console.log(`[BACKEND] Starting (restart #${backendRestartCount})...`);
-    console.log(`[BACKEND] Executable: ${executablePath}`);
-    console.log(`[BACKEND] CWD: ${backendDir}`);
+    console.log(`Executable: ${executablePath}`);
+    console.log(`CWD: ${backendDir}`);
+
+    // Use a more robust spawn configuration for Windows
+    const spawnOptions = {
+        cwd: backendDir,
+        shell: false, // Shell: true with CMD causes ENOENT if path is weird
+        windowsHide: true,
+        env: { ...process.env, PYTHONNOUSERSITE: '1' }
+    };
+
+    backendProcess = spawn(executablePath, finalArgs, spawnOptions);
 
     const logPath = path.join(require('os').homedir(), 'genga_electron_backend.log');
     const logStream = fs.createWriteStream(logPath, { flags: 'a' });
-    const timestamp = new Date().toISOString();
-    logStream.write(`\n--- Backend Start [${timestamp}] (restart #${backendRestartCount}) ---\n`);
-
-    backendProcess = spawn(executablePath, finalArgs, {
-        cwd: backendDir,
-        shell: false,
-        windowsHide: true,
-        env: {
-            ...process.env,
-            PYTHONNOUSERSITE: '1',
-            PYTHONUNBUFFERED: '1'  // Ensure real-time stdout
-        }
-    });
 
     backendProcess.stdout.on('data', (data) => {
-        const msg = `[BACKEND] ${data}`;
+        const msg = `Backend: ${data}`;
         console.log(msg);
-        logStream.write(msg);
+        logStream.write(msg + '\n');
     });
 
     backendProcess.stderr.on('data', (data) => {
-        const msg = `[BACKEND ERR] ${data}`;
+        const msg = `Backend Error: ${data}`;
         console.error(msg);
-        logStream.write(msg);
+        logStream.write(msg + '\n');
     });
 
-    backendProcess.on('close', (code, signal) => {
-        const msg = `[BACKEND] Process exited — code: ${code}, signal: ${signal}`;
+    backendProcess.on('close', (code) => {
+        const msg = `Backend process exited with code ${code}`;
         console.log(msg);
         logStream.write(msg + '\n');
-
-        if (code !== 0 && code !== null && !app.isQuitting) {
-            // Auto-restart on crash
-            if (backendRestartCount < MAX_BACKEND_RESTARTS) {
-                backendRestartCount++;
-                const delay = Math.min(3000 * backendRestartCount, 10000); // 3s, 6s, 9s...
-                console.log(`[BACKEND] Restarting in ${delay}ms... (attempt ${backendRestartCount}/${MAX_BACKEND_RESTARTS})`);
-                logStream.write(`[BACKEND] Restarting in ${delay}ms...\n`);
-                setTimeout(() => startBackend(), delay);
-            } else {
-                console.error('[BACKEND] Max restarts reached. Backend is not starting correctly.');
-                logStream.write('[BACKEND] Max restarts reached.\n');
-            }
-        }
-    });
-
-    backendProcess.on('error', (err) => {
-        console.error(`[BACKEND] Spawn error: ${err.message}`);
-        logStream.write(`[BACKEND] Spawn error: ${err.message}\n`);
     });
 }
 
@@ -198,73 +160,30 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: Math.min(1400, width),
         height: Math.min(900, height),
-        show: false,
-        frame: true,
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
-            webSecurity: false,
+            webSecurity: false, // Required for YouTube IFrame API to work with file:// origin
             allowRunningInsecureContent: true
         },
         title: "Genga Movie",
-        backgroundColor: '#0a0a12',
+        backgroundColor: '#000000',
         autoHideMenuBar: true,
         icon: path.join(__dirname, '..', 'frontend', 'public', 'favicon.png')
     });
 
-    const prodUrl = 'http://localhost:8000';
-    const splashPath = path.join(__dirname, 'splash.html');
-
-    // Step 1: Load the splash screen immediately and show the window
-    mainWindow.loadFile(splashPath).then(() => {
-        mainWindow.show();
-        console.log('[UI] Splash screen shown');
-    }).catch(err => {
-        console.error('[UI] Failed to load splash:', err);
-        mainWindow.show(); // Show anyway
-    });
-
+    // In development, we point to the Vite dev server
+    // In production, we load the built index.html from dist-frontend
     if (app.isPackaged) {
-        // Step 2: Poll for backend readiness using Node's built-in http module
-        const http = require('http');
-
-        const checkBackend = (attempts = 0) => {
-            const req = http.get(`${prodUrl}/api/health`, { timeout: 1000 }, (res) => {
-                if (res.statusCode === 200) {
-                    console.log(`[UI] Backend ready! (attempt ${attempts}). Loading app...`);
-                    // Step 3: Transition to real app
-                    mainWindow.loadURL(prodUrl).catch(e => {
-                        console.error('[UI] Failed to load app URL:', e);
-                    });
-                } else {
-                    req.destroy();
-                    if (attempts < 60) setTimeout(() => checkBackend(attempts + 1), 500);
-                }
-            });
-            req.on('error', () => {
-                // Backend not yet up, keep trying
-                if (attempts < 60) setTimeout(() => checkBackend(attempts + 1), 500);
-                else {
-                    // Final fallback: load local index.html
-                    const localFile = path.join(process.resourcesPath, 'dist-frontend', 'index.html');
-                    console.warn(`[UI] Backend timed out. Loading fallback: ${localFile}`);
-                    mainWindow.loadFile(localFile).catch(e => console.error('[UI] Fallback failed:', e));
-                }
-            });
-            req.on('timeout', () => req.destroy());
-        };
-
-        // Start checking after a very short delay to allow backend process to spawn
-        setTimeout(() => checkBackend(0), 800);
+        mainWindow.loadFile(path.join(__dirname, '..', 'dist-frontend', 'index.html')).catch((err) => {
+            console.error('Failed to load production index.html:', err);
+        });
     } else {
-        // Development mode: load Vite dev server
         const devUrl = 'http://localhost:5173';
-        const tryLoadDev = (attempts = 0) => {
-            mainWindow.loadURL(devUrl).catch(() => {
-                if (attempts < 10) setTimeout(() => tryLoadDev(attempts + 1), 1000);
-            });
-        };
-        setTimeout(() => tryLoadDev(), 1000);
+        mainWindow.loadURL(devUrl).catch(() => {
+            console.log('Vite dev server not ready, retrying in 2s...');
+            setTimeout(() => mainWindow.loadURL(devUrl), 2000);
+        });
     }
 
     mainWindow.on('closed', () => {
@@ -336,9 +255,10 @@ app.whenReady().then(() => {
         // Clear existing ones to avoid "multiple values" errors
         delete responseHeaders['access-control-allow-origin'];
         delete responseHeaders['Access-Control-Allow-Origin'];
+        responseHeaders['Access-Control-Allow-Origin'] = ['*'];
+        
         delete responseHeaders['access-control-allow-methods'];
         delete responseHeaders['Access-Control-Allow-Methods'];
-        
         responseHeaders['Access-Control-Allow-Origin'] = ['*'];
         responseHeaders['Access-Control-Allow-Methods'] = ['GET, POST, OPTIONS, HEAD'];
         responseHeaders['Access-Control-Allow-Headers'] = ['*'];

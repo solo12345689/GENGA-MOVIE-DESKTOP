@@ -275,7 +275,15 @@ function App() {
                             items: Array.isArray(g.items) ? g.items.map(it => ({ ...it, source: 'moviebox' })) : []
                         })));
                     } else if (activeSource === 'animepahe') {
-                        setHomepageContent(Array.isArray(data) ? data : []);
+                        const groups = Array.isArray(data) ? data : [];
+                        setHomepageContent(groups.map(g => ({
+                            ...g,
+                            items: Array.isArray(g.items) ? g.items.map(it => ({
+                                ...it,
+                                poster_url: it.poster_url && it.poster_url.startsWith('/') ? `${API_BASE}${it.poster_url}` : it.poster_url,
+                                poster: it.poster && it.poster.startsWith('/') ? `${API_BASE}${it.poster}` : it.poster
+                            })) : []
+                        })));
                     } else if (activeSource === 'manga') {
                         const results = (data && data.results) || [];
                         setHomepageContent([{
@@ -426,9 +434,13 @@ function App() {
             const data = await res.json();
 
             if (activeSource === 'animepahe') {
-                // Backend already normalizes anime results
+                // Backend already normalizes anime results, but we need to ensure local API_BASE for relative proxy paths
                 const animeData = Array.isArray(data) ? data : (data?.results && Array.isArray(data.results) ? data.results : []);
-                setResults(animeData);
+                setResults(animeData.map(it => ({
+                    ...it,
+                    poster_url: it.poster_url && it.poster_url.startsWith('/') ? `${base}${it.poster_url}` : it.poster_url,
+                    poster: it.poster && it.poster.startsWith('/') ? `${base}${it.poster}` : it.poster
+                })));
             } else if (activeSource === 'manga') {
                 const mangaResults = (data && Array.isArray(data.results)) ? data.results : (Array.isArray(data) ? data : []);
                 setResults(mangaResults.map(it => ({
@@ -483,7 +495,14 @@ function App() {
             }
 
             if (trackToPlay && trackToPlay.stream_url) {
-                setActiveTrack(trackToPlay);
+                // Ensure the stream_url is absolute if it's a proxied path
+                const playerBase = getTargetBase(item.source);
+                let finalUrl = trackToPlay.stream_url;
+                if (finalUrl.startsWith('/api/')) {
+                    finalUrl = `${playerBase}${finalUrl}`;
+                }
+                
+                setActiveTrack({ ...trackToPlay, stream_url: finalUrl });
                 setSelectedItem(null); // Close modal if open
             } else {
                 alert("Could not play this track. Stream URL missing.");
@@ -1204,7 +1223,7 @@ function App() {
                                                 }}>
                                                     {(Array.isArray(group.items) ? group.items : []).map((item, idx) => (
                                                         group.type === 'news' ?
-                                                            <NewsCard key={item.id || idx} item={item} onClick={(it) => setNewsReaderItem(it)} API_BASE={CLOUD_BASE} /> :
+                                                            <NewsCard key={item.id || idx} item={item} onClick={(it) => setNewsReaderItem(it)} API_BASE={API_BASE} /> :
                                                             (activeSource === 'music' ?
                                                                 <MusicCard key={`${item.id}-${index}-${idx}`} movie={item} onClick={handleItemClick} /> :
                                                                 <MovieCard key={`${item.id}-${index}-${idx}`} movie={item} onClick={handleItemClick} />)
@@ -1339,6 +1358,7 @@ function App() {
                 <MusicPlayer
                     track={activeTrack}
                     onClose={() => setActiveTrack(null)}
+                    API_BASE={getTargetBase('music')}
                 />
             )}
 
@@ -1346,7 +1366,7 @@ function App() {
                 <NewsReader
                     articleId={newsReaderItem.id}
                     onClose={() => setNewsReaderItem(null)}
-                    API_BASE={CLOUD_BASE}
+                    API_BASE={API_BASE}
                 />
             )}
 

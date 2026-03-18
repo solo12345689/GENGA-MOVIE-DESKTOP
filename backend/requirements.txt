@@ -5,5 +5,3 @@ pydantic
 requests
 httpx
 yt-dlp
-python-multipart
-aiohttp

@@ -114,26 +114,38 @@ const MangaReader = ({ item, chapterId, chapterTitle, onBack, API_BASE }) => {
                             </div>
                         )}
 
-                        {pages.map((p, i) => (
-                            <img
-                                key={i}
-                                src={`${API_BASE}/api/manga/image-proxy?url=${encodeURIComponent(p.img || p)}`}
-                                alt={`Page ${i + 1}`}
-                                style={{
-                                    width: '100%',
-                                    display: 'block',
-                                    height: 'auto',
-                                    minHeight: '200px',
-                                    background: '#111'
-                                }}
-                                loading={i < 3 ? "eager" : "lazy"}
-                                onError={(e) => {
-                                    console.warn(`Failed to load page ${i + 1}`);
-                                    // Could add a retry button or secondary proxy here
-                                    e.target.style.opacity = 0.5;
-                                }}
-                            />
-                        ))}
+                        {pages.map((p, i) => {
+                            const imgUrl = (typeof p === 'string' ? p : p.img) || p;
+                            const proxiedSrc = `${API_BASE}/api/manga/image-proxy?url=${encodeURIComponent(imgUrl)}`;
+                            
+                            return (
+                                <img
+                                    key={i}
+                                    src={proxiedSrc}
+                                    alt={`Page ${i + 1}`}
+                                    style={{
+                                        width: '100%',
+                                        display: 'block',
+                                        height: 'auto',
+                                        minHeight: '200px',
+                                        background: '#111',
+                                        transition: 'opacity 0.3s'
+                                    }}
+                                    loading={i < 3 ? "eager" : "lazy"}
+                                    onError={(e) => {
+                                        // Attempt direct load if proxy fails, or try secondary proxy
+                                        if (!e.target.dataset.retried) {
+                                            console.warn(`Proxy failed for page ${i + 1}, trying direct...`);
+                                            e.target.dataset.retried = 'true';
+                                            e.target.src = imgUrl; // Fallback to direct URL
+                                        } else {
+                                            e.target.style.opacity = 0.5;
+                                            e.target.style.border = '2px solid red';
+                                        }
+                                    }}
+                                />
+                            );
+                        })}
 
                         {/* Navigation Buttons */}
                         <div style={{

@@ -295,7 +295,7 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
                 if (activeSource === 'moviebox') {
                     if (data.status === 'success' && data.url) {
                         let finalUrl = data.url;
-                        const isInternal = API_BASE ? finalUrl.includes(API_BASE) : finalUrl.includes(window.location.origin);
+                        const isInternal = API_BASE ? (finalUrl.includes(API_BASE) || finalUrl.includes('127.0.0.1:8000') || finalUrl.includes('localhost:8000')) : finalUrl.includes(window.location.origin);
                         if (finalUrl.startsWith('http') && !isInternal) {
                             finalUrl = `${API_BASE}/api/proxy-stream?url=${encodeURIComponent(finalUrl)}&source=${encodeURIComponent(activeSource)}`;
                         } else if (!finalUrl.startsWith('http')) {
@@ -337,7 +337,7 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
                             const s = sourceList[0];
                             let finalUrl = s.url;
                             if (s.type !== 'embed') {
-                                const isInternal = API_BASE ? finalUrl.includes(API_BASE) : finalUrl.includes(window.location.origin);
+                                const isInternal = API_BASE ? (finalUrl.includes(API_BASE) || finalUrl.includes('127.0.0.1:8000') || finalUrl.includes('localhost:8000')) : finalUrl.includes(window.location.origin);
                                 if (finalUrl.startsWith('http') && !isInternal) {
                                     finalUrl = `${API_BASE}/api/proxy-stream?url=${encodeURIComponent(finalUrl)}&source=${encodeURIComponent(activeSource)}`;
                                 } else if (!finalUrl.startsWith('http')) {
@@ -479,11 +479,7 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
                                                     targetUrl = params.get('url') || targetUrl;
                                                 }
 
-                                                const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('/m3u8');
-                                                if (isM3U8) {
-                                                    alert("This stream is using HLS (m3u8) format. Direct downloading of HLS streams as a single file is currently not supported. We recommend using a screen recorder or specialized HLS downloader.");
-                                                    return;
-                                                }
+                                                /* HLS is now supported via backend ffmpeg merger */
 
                                                 const filename = `video_${Date.now()}.mp4`;
                                                 const proxyUrl = `${API_BASE}/api/proxy/download?url=${encodeURIComponent(targetUrl)}&filename=${encodeURIComponent(filename)}&source=${activeSource}`;
