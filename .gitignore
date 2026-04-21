@@ -5,37 +5,82 @@ __pycache__/
 *.so
 .Python
 env/
+venv/
 .venv/
-build/
-build-backend/
-dist/
-dist-backend/
-dist-frontend/
+*.egg-info/
+*.pyd
+*.pyo
+
+# Node / Electron
 node_modules/
 **/node_modules/
-*.old
-old_*
-temp_*
-backup_*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# Mac
-.DS_Store
+# Build outputs
+build/
+build-backend/
+dist/
+dist-backend/
+dist-frontend/
+out/
+release/
 
-# User requests: Logs and test/debug files
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
 *.log
-*.txt
-!requirements.txt
-!CMakeLists.txt
+
+# Debug / Test scripts
 debug_*.py
 test_*.py
-verify_*.py
+*_test.py
+tmp_*.py
+simple_*.py
+robust_*.py
+deep_debug_*.py
+compare_*.py
 inspect_*.py
-check_*.py
 explore_*.py
+verify_*.py
+check_*.py
 reproduce_*.py
+
+compare_types.py
+deep_debug_solo.py
+dump_homepage.py
+fetch_full_json.py
+fetch_homepage_json.py
+read_api_source.py
+read_homepage_source.py
+robust_debug.py
+simple_naruto_test.py
+simple_test.py
+test_manga.py
+test_manga_service.py
+test_manga_service2.py
+tmp_test_backend.py
+
+# Large JSON dumps
 *debug*.json
 *output*.json
+full_homepage.json
+lib_homepage_raw.json
+
+# Local run/debug
+start_backend_debug.bat
+
+# Guides not required on GitHub
+ANDROID_GUIDE.md
+RENDER_GUIDE.md
+TERMUX_GUIDE.md
+
+# Temporary / backups
+*.old
+old_*
+temp_*
+backup_*

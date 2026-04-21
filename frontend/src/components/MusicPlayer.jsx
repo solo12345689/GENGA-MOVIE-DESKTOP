@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 
-const MusicPlayer = ({ track, onClose, API_BASE }) => {
+const MusicPlayer = ({ track, onClose }) => {
     const audioRef = useRef(null);
     const [isPlaying, setIsPlaying] = useState(true);
     const [currentTime, setCurrentTime] = useState(0);
@@ -14,11 +14,7 @@ const MusicPlayer = ({ track, onClose, API_BASE }) => {
 
         let hls = null;
         const setupSource = () => {
-            let url = track.stream_url;
-            if (url && url.startsWith('/') && API_BASE) {
-                url = `${API_BASE}${url}`;
-            }
-
+            const url = track.stream_url;
             if (url.includes('.m3u8')) {
                 if (audio.canPlayType('application/vnd.apple.mpegurl')) {
                     audio.src = url;
@@ -43,7 +39,6 @@ const MusicPlayer = ({ track, onClose, API_BASE }) => {
             } else {
                 audio.src = url;
             }
-            
             audio.play().catch(e => {
                 if (e.name !== 'AbortError' && e.name !== 'NotAllowedError' && e.name !== 'NotSupportedError') {
                     console.log("Initial playback failed:", e);
@@ -53,34 +48,9 @@ const MusicPlayer = ({ track, onClose, API_BASE }) => {
 
         setupSource();
 
-        const handleAudioError = () => {
-            const error = audioRef.current?.error;
-            let msg = "Unknown audio error";
-            if (error) {
-                switch (error.code) {
-                    case 1: msg = "Playback Aborted"; break;
-                    case 2: msg = "Network Error"; break;
-                    case 3: msg = "Decoding Error (Format not supported)"; break;
-                    case 4: msg = "Source Not Supported / Link Expired"; break;
-                    default: msg = error.message || "Unknown error";
-                }
-            }
-            // Only alert for non-benign errors
-            if (error && error.code >= 2) {
-                alert(`Music Playback Error: ${msg}\nURL: ${track.stream_url.substring(0, 100)}...`);
-            }
-            console.error("[MusicPlayer] Audio Error:", error);
-        };
-
-        const audioEl = audioRef.current;
-        if (audioEl) audioEl.addEventListener('error', handleAudioError);
-
         return () => {
             if (hls) hls.destroy();
-            if (audioEl) {
-                audioEl.removeEventListener('error', handleAudioError);
-                audioEl.src = '';
-            }
+            audio.src = '';
         };
     }, [track.stream_url]);
 

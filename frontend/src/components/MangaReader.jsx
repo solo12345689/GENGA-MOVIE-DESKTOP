@@ -24,13 +24,11 @@ const MangaReader = ({ item, chapterId, chapterTitle, onBack, API_BASE }) => {
             setLoading(true);
             setError(null);
             try {
-                // Use query parameter to match backend/api.py
-                const res = await fetch(`${API_BASE}/api/manga/read?chapterId=${encodeURIComponent(localChapterId)}`);
+                const res = await fetch(`${API_BASE}/api/manga/read/${localChapterId}`);
                 if (!res.ok) throw new Error("Failed to fetch pages");
                 const data = await res.json();
 
-                // Backend returns a list directly or wrapped in {pages: []}
-                const fetchedPages = Array.isArray(data) ? data : (data.pages || []);
+                const fetchedPages = data.pages || [];
                 setPages(fetchedPages);
 
                 if (fetchedPages.length === 0) {
@@ -114,38 +112,26 @@ const MangaReader = ({ item, chapterId, chapterTitle, onBack, API_BASE }) => {
                             </div>
                         )}
 
-                        {pages.map((p, i) => {
-                            const imgUrl = (typeof p === 'string' ? p : p.img) || p;
-                            const proxiedSrc = `${API_BASE}/api/manga/image-proxy?url=${encodeURIComponent(imgUrl)}`;
-                            
-                            return (
-                                <img
-                                    key={i}
-                                    src={proxiedSrc}
-                                    alt={`Page ${i + 1}`}
-                                    style={{
-                                        width: '100%',
-                                        display: 'block',
-                                        height: 'auto',
-                                        minHeight: '200px',
-                                        background: '#111',
-                                        transition: 'opacity 0.3s'
-                                    }}
-                                    loading={i < 3 ? "eager" : "lazy"}
-                                    onError={(e) => {
-                                        // Attempt direct load if proxy fails, or try secondary proxy
-                                        if (!e.target.dataset.retried) {
-                                            console.warn(`Proxy failed for page ${i + 1}, trying direct...`);
-                                            e.target.dataset.retried = 'true';
-                                            e.target.src = imgUrl; // Fallback to direct URL
-                                        } else {
-                                            e.target.style.opacity = 0.5;
-                                            e.target.style.border = '2px solid red';
-                                        }
-                                    }}
-                                />
-                            );
-                        })}
+                        {pages.map((p, i) => (
+                            <img
+                                key={i}
+                                src={`${API_BASE}/api/manga/image-proxy?url=${encodeURIComponent(p.img || p)}`}
+                                alt={`Page ${i + 1}`}
+                                style={{
+                                    width: '100%',
+                                    display: 'block',
+                                    height: 'auto',
+                                    minHeight: '200px',
+                                    background: '#111'
+                                }}
+                                loading={i < 3 ? "eager" : "lazy"}
+                                onError={(e) => {
+                                    console.warn(`Failed to load page ${i + 1}`);
+                                    // Could add a retry button or secondary proxy here
+                                    e.target.style.opacity = 0.5;
+                                }}
+                            />
+                        ))}
 
                         {/* Navigation Buttons */}
                         <div style={{

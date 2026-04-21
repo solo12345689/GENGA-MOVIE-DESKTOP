@@ -14,10 +14,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
 
 
     React.useEffect(() => {
-        if (!item) return;
-
-        const isAnimeArray = item.animeEpisodes && Array.isArray(item.animeEpisodes) && item.animeEpisodes.length > 0;
-        if (isAnimeArray) {
+        if (item && item.animeEpisodes && item.animeEpisodes.length > 0) {
             setAnimeEpisodes(item.animeEpisodes);
             setSelectedAnimeEp(item.animeEpisodes[0]);
             setEpisodesLoading(false);
@@ -30,7 +27,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
         setSelectedNovelCh(null);
 
 
-        if (item && item.source === 'animepahe') {
+        if (item && item.source === 'anilist') {
             const fetchEpisodes = async () => {
                 setEpisodesLoading(true);
                 const url = `${API_BASE}/api/anime/episodes/${item.id}`;
@@ -44,7 +41,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                             setSelectedAnimeEp(data.data.episodes[0]);
                         }
                     } else {
-                        console.warn("[DetailsModal] Anime API returned status 200 but no episodes array", data);
+                        console.warn("[DetailsModal] HiAnime API returned status 200 but no episodes array", data);
                         setAnimeEpisodes([]);
                     }
                 } catch (err) {
@@ -59,12 +56,12 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
 
         // Selection logic for other types
         if (item && item.source === 'manga') {
-            const allChapters = item.volumes ? Object.values(item.volumes).flat() : [];
+            const allChapters = item.volumes ? Object.values(item.volumes || {}).flat() : [];
             if (allChapters.length > 0) {
                 setSelectedMangaCh(allChapters[0]);
             }
         } else if (item && item.source === 'novel') {
-            const allChapters = item.volumes ? Object.values(item.volumes).flat() : [];
+            const allChapters = item.volumes ? Object.values(item.volumes || {}).flat() : [];
             if (allChapters.length > 0) {
                 setSelectedNovelCh(allChapters[0]);
             }
@@ -101,13 +98,13 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                     alert('Please select a season and episode');
                 }
             }
-            // Anime (AnimePahe / Gogo)
+            // HiAnime
             else if (selectedAnimeEp) {
                 onStream({ ...item, type: 'anime', episodeId: selectedAnimeEp.episodeId, episodeNo: selectedAnimeEp.number, language: animeLanguage });
             } else {
                 alert('Please select an episode');
             }
-        } else if (item.source === 'animepahe') {
+        } else if (item.source === 'anilist') {
             if (selectedAnimeEp) {
                 onStream({ ...item, type: 'anime', episodeId: selectedAnimeEp.episodeId, episodeNo: selectedAnimeEp.number, language: animeLanguage });
             } else {
@@ -131,10 +128,28 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
 
     };
 
+    // Trigger download: uses Electron native download (instant save dialog) or <a> fallback for browser
+    const triggerDownload = (url, filename) => {
+        try {
+            // Electron: ipcRenderer.send triggers webContents.downloadURL → instant OS save dialog
+            const { ipcRenderer } = window.require('electron');
+            ipcRenderer.send('start-download', url);
+        } catch {
+            // Browser fallback: hidden <a download> click
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename || 'download';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => document.body.removeChild(a), 500);
+        }
+    };
+
     const handleDownloadClick = (magnetUrl = null) => {
         if (item.source === 'cinecli' && magnetUrl) {
             // Trigger Magnet
-            window.location.href = magnetUrl;
+            triggerDownload(magnetUrl, '');
             return;
         }
 
@@ -142,7 +157,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
         if (item.source === 'moviebox') {
             const filename = `${item.title}${item.type === 'series' ? ` S${selectedSeason?.season_number}E${selectedEpisode}` : ''}`.replace(/[/\\?%*:|"<>]/g, '-');
             const url = `${API_BASE}/api/moviebox/download?id=${item.id}&query=${encodeURIComponent(item.title)}&content_type=${item.type || 'movie'}${selectedSeason ? `&season=${selectedSeason.season_number}` : ''}${selectedEpisode ? `&episode=${selectedEpisode}` : ''}`;
-            window.location.href = url;
+            triggerDownload(url, filename);
             return;
         }
 
@@ -154,10 +169,9 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
             }
         } else if (item.source === 'manga') {
             if (selectedMangaCh) {
-                // Default to ZIP download
-                const filename = `${item.title} - ${selectedMangaCh.title}`.replace(/[/\\?%*:|"<>]/g, '-');
+                const filename = `${item.title} - ${selectedMangaCh.title}`.replace(/[/\\?%*:|"<>]/g, '-') + '.zip';
                 const url = `${API_BASE}/api/manga/download/${selectedMangaCh.id}?title=${encodeURIComponent(filename)}`;
-                window.location.href = url;
+                triggerDownload(url, filename);
             } else {
                 alert('Please select a chapter');
             }
@@ -236,18 +250,17 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                     overflowY: 'auto'
                 }}>
                     <h2 style={{ fontSize: '2.5rem', marginBottom: '0.5rem', lineHeight: 1.1 }}>
-                        {item.type === 'music_playlist' ? (item.title || item.name) : item.title}
+                        {item.type === 'music_playlist' ? (item.title || item.name || 'Untitled') : (item.title || 'Untitled')}
                     </h2>
 
                     <div style={{ display: 'flex', gap: '1rem', color: 'var(--text-muted)', marginBottom: '2rem', fontSize: '0.95rem', alignItems: 'center', flexWrap: 'wrap' }}>
                         <span style={{ background: 'rgba(255,255,255,0.1)', padding: '2px 8px', borderRadius: '4px' }}>{item.year}</span>
                         <span style={{ textTransform: 'capitalize', color: 'var(--primary)' }}>
                             {item.source === 'cinecli' ? 'Torpedo' :
-                                item.source === 'novel' ? 'Novel' :
-                                    (item.type === 'manga' ? 'Manga' :
-                                        (item.type === 'anime' ? 'Anime' :
-                                            (item.type === 'series' || (item.type !== 'movie' && item.type !== 'anime_movie' && item.seasons && item.seasons.length > 0) ? 'Series' :
-                                                (item.source === 'music' ? (item.type === 'music_playlist' ? 'Playlist' : 'Music') : 'Movie'))))}
+                                (item.type === 'manga' ? 'Manga' :
+                                    (item.type === 'anime' ? 'Anime' :
+                                        (item.type === 'series' || (item.type !== 'movie' && item.type !== 'anime_movie' && item.seasons && item.seasons.length > 0) ? 'Series' :
+                                            (item.source === 'music' ? (item.type === 'music_playlist' ? 'Playlist' : 'Music') : 'Movie'))))}
                         </span>
 
                         {item.runtime && <span>{item.runtime} min</span>}
@@ -280,7 +293,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                                     {item.source === 'music' ? 'Fetching tracks and information...' :
                                         item.type === 'manga' ? 'Fetching chapters and volumes...' :
                                             item.source === 'novel' ? 'Fetching novel chapters and metadata...' :
-                                                item.source === 'animepahe' || item.type === 'anime' ? 'Fetching episodes and information...' :
+                                                item.source === 'anilist' || item.type === 'anime' ? 'Fetching episodes and information...' :
                                                     'Fetching seasons and ratings...'}
 
                                 </div>
@@ -305,16 +318,19 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                                         <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
                                     </svg>
                                     <div>
-                                        <div style={{ fontSize: '1.4rem', fontWeight: '700', color: '#fbbf24', lineHeight: 1 }}>{item.rating}</div>
-                                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>IMDB Rating</div>
+                                        <div style={{ fontSize: '1.4rem', fontWeight: '700', color: '#fbbf24', lineHeight: 1 }}>
+                                            {typeof item.rating === 'number' ? item.rating.toFixed(1) : (item.rating || 'N/A')}
+                                        </div>
+                                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Rating</div>
                                     </div>
                                 </div>
                             )}
 
-                            {item.description || item.plot ? (
-                                <p style={{ lineHeight: '1.7', marginBottom: '2.5rem', color: 'var(--text-dim)', fontSize: '1.05rem' }}>
-                                    {item.description || item.plot}
-                                </p>
+                            {(item.description || item.plot) ? (
+                                <p 
+                                    style={{ lineHeight: '1.7', marginBottom: '2.5rem', color: 'var(--text-dim)', fontSize: '1.05rem' }}
+                                    dangerouslySetInnerHTML={{ __html: item.description || item.plot }}
+                                />
                             ) : null}
 
                             <div style={{ marginTop: 'auto' }}>
@@ -417,8 +433,8 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                                     </div>
                                 )}
 
-                                {/* --- ANIME EPISODES --- */}
-                                {item.source === 'animepahe' && (
+                                {/* --- HIANIME EPISODES --- */}
+                                {item.source === 'anilist' && (
                                     <div style={{
                                         marginBottom: '2rem',
                                         background: 'rgba(255, 255, 255, 0.03)',
@@ -650,7 +666,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                                                 {item.source === 'manga' || item.source === 'novel' ? 'Read Now' : 'Stream Now'}
                                             </button>
 
-                                            {item.source !== 'animepahe' && item.source !== 'novel' && (
+                                            {item.source !== 'anilist' && item.source !== 'novel' && (
                                                 <div style={{ display: 'flex', gap: '1rem', flex: 1 }}>
                                                     <button className="btn btn-glass" onClick={() => handleDownloadClick()} style={{ flex: 1 }}>
                                                         {item.source === 'manga' ? 'Download ZIP' : 'Download'}

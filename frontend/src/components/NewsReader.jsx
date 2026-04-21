@@ -9,7 +9,7 @@ const NewsReader = ({ articleId, onClose, API_BASE }) => {
         const fetchArticle = async () => {
             setLoading(true);
             try {
-                const res = await fetch(`${API_BASE}/api/news/info?id=${encodeURIComponent(articleId)}`);
+                const res = await fetch(`${API_BASE}/news/ann/info?id=${encodeURIComponent(articleId)}`);
                 if (res.ok) {
                     const data = await res.json();
                     setArticle(data);
@@ -28,7 +28,7 @@ const NewsReader = ({ articleId, onClose, API_BASE }) => {
 
     if (!articleId) return null;
 
-    const proxiedHero = (article && article.thumbnail) ? `${API_BASE}/api/image-proxy?url=${encodeURIComponent(article.thumbnail)}` : null;
+    const proxiedHero = article && article.thumbnail ? `http://localhost:8000/api/image-proxy?url=${encodeURIComponent(article.thumbnail)}` : null;
 
     return (
         <div className="news-reader-overlay" style={{
@@ -152,28 +152,33 @@ const NewsReader = ({ articleId, onClose, API_BASE }) => {
                                     </div>
                                 </div>
 
-                                {article.intro && (
-                                    <div style={{
-                                        padding: '1.5rem',
-                                        background: 'rgba(var(--primary-rgb), 0.1)',
-                                        borderRadius: '16px',
-                                        borderLeft: '4px solid var(--primary)',
-                                        fontStyle: 'italic',
-                                        color: 'rgba(255,255,255,0.9)',
-                                        fontSize: '1.1rem',
-                                        lineHeight: '1.6'
-                                    }}>
-                                        {article.intro}
-                                    </div>
-                                )}
-
                                 <div style={{
-                                    fontSize: '1.15rem',
+                                    fontSize: '1.1rem',
                                     lineHeight: '1.8',
-                                    color: 'rgba(255,255,255,0.85)',
-                                    whiteSpace: 'pre-wrap'
+                                    color: 'rgba(255,255,255,0.85)'
                                 }}>
-                                    {article.description}
+                                    {article.intro && (
+                                        <div style={{
+                                            padding: '1.5rem',
+                                            background: 'rgba(255,255,255,0.03)',
+                                            borderRadius: '16px',
+                                            borderLeft: '4px solid var(--primary)',
+                                            fontStyle: 'italic',
+                                            marginBottom: '2rem'
+                                        }}>
+                                            {article.intro}
+                                        </div>
+                                    )}
+                                    
+                                    <div className="article-body">
+                                        {(article.description || article.content || article.text) ? (
+                                            (article.description || article.content || article.text).split('\n').map((para, i) => (
+                                                para.trim() && <p key={i} style={{ marginBottom: '1.5rem' }}>{para.trim()}</p>
+                                            ))
+                                        ) : (
+                                            <p style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>No additional content available for this article.</p>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
                         </>
@@ -185,8 +190,6 @@ const NewsReader = ({ articleId, onClose, API_BASE }) => {
                 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
                 @keyframes slideUp { from { transform: translateY(50px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
                 .spinner-large {
-                    width: '48px', height: '48px',
-                    border: '4px solid rgba(255,255,255,0.1)',
                     borderTopColor: 'var(--primary)',
                     borderRadius: '50%',
                     animation: 'spin 1s linear infinite'

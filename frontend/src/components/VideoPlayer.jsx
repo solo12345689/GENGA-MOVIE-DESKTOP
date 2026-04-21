@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useMemo } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 
 // ─── YouTube IFrame API Player ────────────────────────────────────────────────
 // Uses the official YT.Player API (same as Famelack) instead of raw <iframe>.
@@ -8,25 +8,14 @@ const YouTubeIframePlayer = ({ url, source }) => {
     const containerRef = useRef(null);
     const playerRef = useRef(null);
     const [fallback, setFallback] = useState(false);
-    const [loading, setLoading] = useState(true);
 
-    // Extract video ID from any YouTube URL format
-    const videoId = useMemo(() => {
-        if (!url) return null;
-        const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-        const match = url.match(regExp);
-        if (match && match[2].length === 11) return match[2];
-
-        // Fallback for direct IDs or weird links
-        const parts = url.split(/[/?&=]/);
-        return parts.find(p => p.length === 11 && /^[A-Za-z0-9_-]{11}$/.test(p)) || null;
-    }, [url]);
+    // Extract video ID from embed URL: /embed/VIDEO_ID
+    const videoId = url && url.match(/\/embed\/([A-Za-z0-9_-]{6,})/)?.[1];
     // Build watch URL for open-in-youtube button
     const watchUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : url;
 
     useEffect(() => {
         if (!videoId || !containerRef.current) {
-            setLoading(false);
             setFallback(true);
             return;
         }
@@ -37,12 +26,7 @@ const YouTubeIframePlayer = ({ url, source }) => {
         const initPlayer = () => {
             if (!isMounted || !containerRef.current) return;
             try {
-                // Clear the container first to prevent multiple players
-                containerRef.current.innerHTML = '';
-                const playerDiv = document.createElement('div');
-                containerRef.current.appendChild(playerDiv);
-
-                playerRef.current = new window.YT.Player(playerDiv, {
+                playerRef.current = new window.YT.Player(containerRef.current, {
                     videoId,
                     width: '100%',
                     height: '100%',
@@ -52,33 +36,22 @@ const YouTubeIframePlayer = ({ url, source }) => {
                         playsinline: 1,
                         enablejsapi: 1,
                         modestbranding: 1,
-                        mute: 1,
-                        origin: window.location.protocol === 'file:' ? 'http://localhost:8000' : window.location.origin
+                        origin: window.location.origin,
                     },
                     events: {
                         onReady: (e) => {
-                            if (isMounted) {
-                                setLoading(false);
-                                e.target.playVideo();
-                                // Ensure it's not muted if user wants sound
-                                if (e.target.isMuted()) e.target.unMute();
-                            }
+                            if (isMounted) e.target.playVideo();
                         },
                         onError: (e) => {
+                            // Error 150/153: embedding not allowed — show fallback
                             console.warn('[YouTubeIframePlayer] YT error code:', e.data);
-                            if (isMounted) {
-                                setLoading(false);
-                                setFallback(true);
-                            }
+                            if (isMounted) setFallback(true);
                         },
                     },
                 });
             } catch (err) {
                 console.error('[YouTubeIframePlayer] Failed to init YT.Player:', err);
-                if (isMounted) {
-                    setLoading(false);
-                    setFallback(true);
-                }
+                if (isMounted) setFallback(true);
             }
         };
 
@@ -90,16 +63,13 @@ const YouTubeIframePlayer = ({ url, source }) => {
                 const script = document.createElement('script');
                 script.id = 'yt-iframe-api';
                 script.src = 'https://www.youtube.com/iframe_api';
-                script.onerror = () => { if (isMounted) { setLoading(false); setFallback(true); } };
+                script.onerror = () => { if (isMounted) setFallback(true); };
                 document.head.appendChild(script);
             }
             // Timeout fallback if API never loads
             timeoutId = setTimeout(() => {
-                if (isMounted && !window.YT) {
-                    setLoading(false);
-                    setFallback(true);
-                }
-            }, 8000);
+                if (isMounted && !window.YT) setFallback(true);
+            }, 5000);
             // Poll for YT ready
             const poll = setInterval(() => {
                 if (window.YT && window.YT.Player) {
@@ -136,17 +106,8 @@ const YouTubeIframePlayer = ({ url, source }) => {
     }
 
     return (
-        <div style={{ width: '100%', height: '100%', background: 'black', position: 'relative' }}>
-            {loading && (
-                <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 10, background: '#000' }}>
-                    <div className="streaming-spinner" style={{ width: 40, height: 40, border: '3px solid rgba(255,255,255,0.1)', borderTop: '3px solid #ff0000', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
-                    <p style={{ color: '#fff', marginTop: 16, fontSize: '0.9rem', opacity: 0.7 }}>Preparing Stream...</p>
-                </div>
-            )}
-            <div id={`yt-player-${videoId}`} ref={containerRef} style={{ width: '100%', height: '100%' }} />
-            <style>{`
-                @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-            `}</style>
+        <div style={{ width: '100%', height: '100%' }}>
+            <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
         </div>
     );
 };
@@ -177,89 +138,20 @@ const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext
     const [subtitleSearch, setSubtitleSearch] = useState('');
     const [preferredLang, setPreferredLang] = useState(localStorage.getItem('preferred_subtitle_lang') || 'English');
 
-    // FIX 1: Add a ref to track if the user is using touch (Mobile)
     const isTouch = useRef(false);
-    const [canCast, setCanCast] = useState(false);
-
-    // Initial check for casting support
-    // Unified Cast Detection (RemotePlayback + Cast SDK)
-    useEffect(() => {
-        const checkCast = () => {
-            if (videoRef.current && videoRef.current.remote && videoRef.current.remote.prompt) {
-                setCanCast(true);
-            }
-        };
-
-        checkCast();
-        
-        // Google Cast SDK Listener
-        window.__onGCastApiAvailable = (isAvailable) => {
-            if (isAvailable && window.cast && window.cast.framework) {
-                setCanCast(true);
-                try {
-                    const castContext = window.cast.framework.CastContext.getInstance();
-                    castContext.setOptions({
-                        receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
-                        autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED
-                    });
-                    console.log("[Cast] SDK Initialized");
-                } catch (e) {
-                    console.warn("[Cast] SDK initialization error:", e);
-                }
-            }
-        };
-
-        // Fallback check if script loaded before component mount
-        if (window.cast && window.cast.framework) {
-            window.__onGCastApiAvailable(true);
-        }
-
-    }, [url]);
-
-    const handleCast = () => {
-        const video = videoRef.current;
-        if (!video) return;
-
-        // 1. Try Google Cast SDK first for better TV support
-        if (window.cast && window.cast.framework) {
-            try {
-                const castContext = window.cast.framework.CastContext.getInstance();
-                castContext.requestSession().then(
-                    (session) => console.log("[Cast] Session started"),
-                    (err) => {
-                        if (err !== 'cancel') console.warn("[Cast] SDK Prompt failed, trying RemotePlayback...");
-                        // Fallback to RemotePlayback if SDK canceled or failed
-                        if (video.remote && video.remote.prompt) video.remote.prompt();
-                    }
-                );
-                return;
-            } catch (e) {
-                console.warn("[Cast] SDK error, falling back...");
-            }
-        }
-
-        // 2. Standard RemotePlayback Fallback
-        if (video.remote && video.remote.prompt) {
-            video.remote.prompt().catch(err => {
-                console.error("[Cast] Failed to prompt:", err);
-                if (err.message.includes("No remote playback devices found")) {
-                    alert("No Smart TV or Chromecast found on your network.\n\n1. Ensure your TV is on.\n2. Ensure both PC and TV are on the same Wi-Fi.\n3. Verify your TV supports Casting or DLNA.\n4. Try right-clicking the video and selecting 'Cast...'");
-                } else if (!err.message.includes("dismissed")) {
-                    alert("Casting error: " + err.message);
-                }
-            });
-        } else {
-            alert("Casting is not supported in this environment.\n\nTip: You can right-click any video and select 'Cast...' in Chrome/Edge/Electron.");
-        }
-    };
+    const hlsRef = useRef(null);
 
     // Unified source loading effect
     useEffect(() => {
         const video = videoRef.current;
         if (!video || type === 'embed' || !url) return;
 
-        // --- HLS and Standard Source Setup ---
-        let hls = null;
+        // Cleanup previous hls instance if any
+        if (hlsRef.current) {
+            hlsRef.current.destroy();
+            hlsRef.current = null;
+        }
+
         const safePlay = () => {
             if (video.paused) {
                 const playPromise = video.play();
@@ -281,28 +173,32 @@ const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext
                     video.src = url;
                     safePlay();
                 } else if (window.Hls && window.Hls.isSupported()) {
-                    hls = new window.Hls({
+                    hlsRef.current = new window.Hls({
                         enableWorker: true,
                         startFragPrefetch: true,
-                        lowLatencyMode: true,
-                        liveSyncDuration: 12,
+                        lowLatencyMode: false,
+                        liveSyncDuration: 15,
                         liveMaxLatencyDuration: 20,
                         maxBufferLength: 30,
                         maxMaxBufferLength: 60,
                         manifestLoadingRetryDelay: 500,
                         levelLoadingRetryDelay: 500,
                     });
-                    hls.loadSource(url);
-                    hls.attachMedia(video);
-                    hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-                        safePlay();
+                    hlsRef.current.loadSource(url);
+                    hlsRef.current.attachMedia(video);
+                    hlsRef.current.on(window.Hls.Events.MANIFEST_PARSED, () => {
+                        console.log("[VideoPlayer] Manifest parsed. Waiting 5 seconds to build live buffer...");
+                        setTimeout(() => {
+                            safePlay();
+                        }, 5000);
                     });
-                    hls.on(window.Hls.Events.ERROR, (event, data) => {
+                    hlsRef.current.on(window.Hls.Events.ERROR, (event, data) => {
                         if (data.fatal) {
                             if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
-                                hls.startLoad();
+                                hlsRef.current.startLoad();
                             } else {
-                                hls.destroy();
+                                hlsRef.current.destroy();
+                                hlsRef.current = null;
                             }
                         }
                     });
@@ -312,21 +208,27 @@ const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext
                     script.onload = () => {
                         const Hls = window.Hls;
                         if (Hls.isSupported()) {
-                            hls = new Hls({
+                            hlsRef.current = new Hls({
                                 enableWorker: true,
                                 startFragPrefetch: true,
-                                lowLatencyMode: true,
-                                liveSyncDuration: 12,
+                                lowLatencyMode: false,
+                                liveSyncDuration: 15,
                                 liveMaxLatencyDuration: 20,
-                                maxBufferLength: 30,
-                                maxMaxBufferLength: 60
+                                maxBufferLength: 30
                             });
-                            hls.loadSource(url);
-                            hls.attachMedia(video);
-                            hls.on(Hls.Events.MANIFEST_PARSED, () => safePlay());
+                            hlsRef.current.loadSource(url);
+                            hlsRef.current.attachMedia(video);
+                            hlsRef.current.on(Hls.Events.MANIFEST_PARSED, () => {
+                                console.log("[VideoPlayer] Manifest parsed. Waiting 5 seconds to build live buffer...");
+                                setTimeout(() => {
+                                    safePlay();
+                                }, 5000);
+                            });
                         } else {
-                            video.src = url;
-                            safePlay();
+                            setTimeout(() => {
+                                video.src = url;
+                                safePlay();
+                            }, 5000);
                         }
                     };
                     document.head.appendChild(script);
@@ -341,7 +243,10 @@ const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext
         setupSource();
 
         return () => {
-            if (hls) hls.destroy();
+            if (hlsRef.current) {
+                hlsRef.current.destroy();
+                hlsRef.current = null;
+            }
         };
     }, [url, type, autoPlay]);
 
@@ -411,11 +316,26 @@ const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext
         const handlePlay = () => {
             setIsPlaying(true);
             setIsBuffering(false);
+            
+            // For live streams, ensure Hls.js starts loading segments and check for stale position
+            if (isLiveStream && hlsRef.current) {
+                hlsRef.current.startLoad();
+                
+                // If we are way behind the live edge (more than 15s), jump to live
+                if (Number.isFinite(video.duration) && video.currentTime < video.duration - 15) {
+                    video.currentTime = video.duration - 1;
+                }
+            }
         };
 
         const handlePause = () => {
             setIsPlaying(false);
             setIsBuffering(false);
+            
+            // Stop loading segments if paused on a live stream to save resources/prevent stale buffer
+            if (isLiveStream && hlsRef.current) {
+                hlsRef.current.stopLoad();
+            }
         };
 
         const handleWaiting = () => setIsBuffering(true);
@@ -481,15 +401,22 @@ const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext
             if (isPlaying) {
                 video.pause();
             } else {
-                // If the video element already has an error, don't try to play it
-                if (video.error) {
-                    // console.log("[VideoPlayer] Cannot play: video has error", video.error.message);
-                    return;
+                // For live streams, unpausing often fails if the buffer is stale.
+                // We force a jump to the live edge if we are more than 10s behind.
+                if (isLiveStream && Number.isFinite(video.duration)) {
+                    // Infinity duration or large duration means live.
+                    // If we paused and the manifest updated, we should skip to head.
+                    const liveEdge = video.duration - 2; // 2s from the very end
+                    if (video.currentTime < liveEdge - 5) {
+                        video.currentTime = liveEdge;
+                    }
                 }
+
+                if (video.error) return;
+                
                 try {
                     await video.play();
                 } catch (error) {
-                    // Suppress AbortError, NotAllowedError, and NotSupportedError
                     if (error.name !== 'AbortError' && error.name !== 'NotAllowedError' && error.name !== 'NotSupportedError') {
                         console.log("[VideoPlayer] Toggle play failed:", error.name, error.message);
                     }
@@ -571,7 +498,7 @@ const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext
             }}
         >
             {type === 'embed' ? (
-                (url && (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('youtube-nocookie.com') || url.includes('yt-dlp'))) ? (
+                (url && (url.includes('youtube.com') || url.includes('youtu.be'))) ? (
                     <YouTubeIframePlayer url={url} source={source} />
                 ) : (
                     <iframe
@@ -593,8 +520,6 @@ const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext
                     playsInline
                     preload="auto"
                     {...(source === 'moviebox' ? { crossOrigin: 'anonymous' } : {})}
-                    disableRemotePlayback={false}
-                    x-webkit-airplay="allow"
                     onError={(e) => {
                         const error = videoRef.current?.error;
                         const msg = error?.message || error || '';
@@ -918,20 +843,6 @@ const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext
                                     )}
                                 </div>
                             )}
-
-                            <button
-                                onClick={handleCast}
-                                style={{
-                                    background: 'transparent', border: 'none', color: '#fff',
-                                    cursor: 'pointer', fontSize: '1.4rem', padding: '0',
-                                    opacity: 0.8, display: 'flex', alignItems: 'center', justifyContent: 'center'
-                                }}
-                                title="Cast to TV"
-                            >
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                                    <path d="M21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.21 0 4 1.79 4 4h2c0-3.31-2.69-6-6-6zm0-4v2c4.42 0 8 3.58 8 8h2c0-5.52-4.48-10-10-10z" />
-                                </svg>
-                            </button>
 
                             <button
                                 onClick={toggleFullscreen}

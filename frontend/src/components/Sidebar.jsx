@@ -1,112 +1,194 @@
-import React, { useMemo } from 'react';
-import './Sidebar.css';
-
-const Icon = ({ children }) => (
-    <svg
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-    >
-        {children}
-    </svg>
-);
-
-const NAV_ITEMS = [
-    { id: 'home', label: 'Home', icon: <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path> },
-    { id: 'moviebox', label: 'MovieBox', icon: <path d="M19.82 2H4.18C2.97 2 2 2.97 2 4.18v15.64C2 21.03 2.97 22 4.18 22h15.64c1.21 0 2.18-.97 2.18-2.18V4.18C22 2.97 21.03 2 19.82 2zM7 16l5-3 5 3V8l-5 3-5-3v8z"></path> },
-    { id: 'animepahe', label: 'Anime', icon: <path d="M12 2L2 7l10 5 10-5-10-5zm0 9l2.5-1.25L12 8.5l-2.5 1.25L12 11zm0 2.5l-5-2.5-5 2.5L12 22l10-8.5-5-2.5-5 2.5z"></path> },
-    { id: 'manga', label: 'Manga', icon: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></> },
-    { id: 'novel', label: 'Novel', icon: <><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></> },
-    { id: 'tv', label: 'Live TV', icon: <><rect x="2" y="7" width="20" height="15" rx="2" ry="2"></rect><polyline points="17 2 12 7 7 2"></polyline></> },
-    { id: 'news', label: 'News', icon: <><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"></path><path d="M18 14h-8"></path><path d="M15 18h-5"></path><path d="M10 6h8v4h-8z"></path></> },
-    { id: 'music', label: 'Music', icon: <><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></> },
-    { id: 'history', label: 'History', icon: <><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></> }
-];
+import React from 'react';
 
 const Sidebar = ({ activeSource, onChangeSource, serverStatus, isOpen, onToggle }) => {
+    const navItems = [
+        { id: 'home', label: 'Home', icon: <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path> },
+        { id: 'anilist', label: 'Anime', icon: <path d="M12 2L2 7l10 5 10-5-10-5zm0 9l2.5-1.25L12 8.5l-2.5 1.25L12 11zm0 2.5l-5-2.5-5 2.5L12 22l10-8.5-5-2.5-5 2.5z"></path> },
+        { id: 'manga', label: 'Manga', icon: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></> },
+        { id: 'tv', label: 'Live TV', icon: <><rect x="2" y="7" width="20" height="15" rx="2" ry="2"></rect><polyline points="17 2 12 7 7 2"></polyline></> },
+        { id: 'news', label: 'News', icon: <><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"></path><path d="M18 14h-8"></path><path d="M15 18h-5"></path><path d="M10 6h8v4h-8z"></path></> },
+        { id: 'music', label: 'Music', icon: <><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></> },
+        { id: 'radio', label: 'Radio', icon: <><rect x="2" y="8" width="20" height="14" rx="2" ry="2"></rect><path d="M12 2v6"></path><circle cx="8" cy="15" r="3"></circle><line x1="16" y1="12" x2="18" y2="12"></line><line x1="16" y1="15" x2="18" y2="15"></line><line x1="16" y1="18" x2="18" y2="18"></line></> },
+        { id: 'history', label: 'History', icon: <><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></> }
+    ];
+
     return (
         <aside 
-            className="sidebar-container" 
-            style={{ width: isOpen ? '240px' : '70px' }}
-            aria-label="Main Sidebar"
+            className="glass-panel"
+            style={{
+                width: isOpen ? '260px' : '85px',
+                height: 'calc(100vh - 2rem)',
+                margin: '1rem',
+                borderRadius: 'var(--radius-lg)',
+                position: 'sticky',
+                top: '1rem',
+                display: 'flex',
+                flexDirection: 'column',
+                padding: '2rem 1rem',
+                zIndex: 100,
+                flexShrink: 0,
+                transition: 'all 0.5s var(--ease-out)',
+                border: '1px solid var(--border-bright)',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)'
+            }}
         >
             {/* Logo Area */}
-            <div 
-                className="logo-area"
-                style={{ 
-                    padding: isOpen ? '0 1rem' : '0',
-                    justifyContent: isOpen ? 'space-between' : 'center'
-                }}
-            >
+            <div style={{
+                padding: isOpen ? '0 1rem' : '0',
+                marginBottom: '4rem',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: isOpen ? 'space-between' : 'center',
+                animation: 'fadeIn 0.8s ease-out'
+            }}>
                 {isOpen && (
-                    <div className="logo-text">
-                        <h1>GENGA</h1>
-                        <p>Movies</p>
+                    <div className="animate-float">
+                        <h1 style={{
+                            fontSize: '1.8rem',
+                            margin: 0,
+                            background: 'linear-gradient(135deg, #fff 0%, var(--primary) 100%)',
+                            WebkitBackgroundClip: 'text',
+                            WebkitTextFillColor: 'transparent',
+                            fontWeight: '900',
+                            letterSpacing: '-1.5px'
+                        }}>
+                            GENGA
+                        </h1>
+                        <p style={{ color: 'var(--accent-cyan)', fontSize: '0.7rem', marginTop: '2px',协议: '5px', textTransform: 'uppercase', fontWeight: 'bold' }}>MOVIES</p>
                     </div>
                 )}
 
                 <button
-                    className="toggle-btn"
                     onClick={onToggle}
-                    aria-label={isOpen ? "Collapse Sidebar" : "Expand Sidebar"}
+                    style={{
+                        background: 'rgba(255,255,255,0.05)',
+                        border: '1px solid var(--border-glass)',
+                        color: 'var(--text-main)',
+                        cursor: 'pointer',
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '10px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'all 0.3s'
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
                 >
-                    <Icon>
-                        {isOpen ? (
-                            <polyline points="15 18 9 12 15 6"></polyline>
-                        ) : (
-                            <polyline points="9 18 15 12 9 6"></polyline>
-                        )}
-                    </Icon>
+                    {isOpen ? (
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                    ) : (
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                    )}
                 </button>
             </div>
 
             {/* Navigation */}
-            <nav className="nav-list">
-                {NAV_ITEMS.map(item => (
+            <nav style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                {navItems.map(item => (
                     <button
                         key={item.id}
-                        className={`nav-item-btn ${activeSource === item.id ? 'active' : ''}`}
                         onClick={() => onChangeSource(item.id)}
                         title={!isOpen ? item.label : ''}
-                        aria-current={activeSource === item.id ? 'page' : undefined}
-                        aria-label={item.label}
-                        style={{ justifyContent: isOpen ? 'flex-start' : 'center' }}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: isOpen ? 'flex-start' : 'center',
+                            gap: '16px',
+                            padding: '14px 18px',
+                            background: activeSource === item.id ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                            border: '1px solid',
+                            borderColor: activeSource === item.id ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
+                            borderRadius: '16px',
+                            color: activeSource === item.id ? '#fff' : 'var(--text-muted)',
+                            cursor: 'pointer',
+                            transition: 'all 0.3s var(--ease-out)',
+                            textAlign: 'left',
+                            fontSize: '0.95rem',
+                            fontWeight: activeSource === item.id ? '600' : '500',
+                            width: '100%',
+                            position: 'relative',
+                            overflow: 'hidden'
+                        }}
+                        onMouseEnter={e => {
+                            if (activeSource !== item.id) {
+                                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                e.currentTarget.style.color = '#fff';
+                                e.currentTarget.style.transform = 'translateX(4px)';
+                            }
+                        }}
+                        onMouseLeave={e => {
+                            if (activeSource !== item.id) {
+                                e.currentTarget.style.background = 'transparent';
+                                e.currentTarget.style.color = 'var(--text-muted)';
+                                e.currentTarget.style.transform = 'translateX(0)';
+                            }
+                        }}
                     >
-                        <Icon>{item.icon}</Icon>
-                        {isOpen && item.label}
+                        {/* THE ACTIVE INDICATOR GLOW */}
+                        {activeSource === item.id && (
+                            <div style={{
+                                position: 'absolute',
+                                left: 0,
+                                top: '20%',
+                                bottom: '20%',
+                                width: '4px',
+                                background: 'var(--primary)',
+                                borderRadius: '0 4px 4px 0',
+                                boxShadow: '0 0 15px var(--primary)'
+                            }} />
+                        )}
+
+                        <svg
+                            width="22"
+                            height="22"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke={activeSource === item.id ? 'var(--primary)' : 'currentColor'}
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            style={{ 
+                                transition: 'all 0.3s',
+                                filter: activeSource === item.id ? 'drop-shadow(0 0 5px var(--primary-glow))' : 'none'
+                            }}
+                        >
+                            {item.icon}
+                        </svg>
+                        {isOpen && <span style={{ transition: 'opacity 0.3s', opacity: 1 }}>{item.label}</span>}
                     </button>
                 ))}
             </nav>
 
             {/* Status Footer */}
-            <div 
-                className="status-footer"
-                style={{ 
-                    padding: isOpen ? '1rem' : '1rem 0',
-                    alignItems: isOpen ? 'flex-start' : 'center'
-                }}
-            >
-                <div 
-                    className="status-indicator"
-                    style={{ justifyContent: isOpen ? 'flex-start' : 'center' }}
-                >
-                    <div className={`status-dot ${serverStatus === 'operational' ? 'operational' : 'issue'}`}></div>
+            <div style={{ marginTop: 'auto', padding: isOpen ? '1.5rem' : '1.5rem 0', borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', alignItems: isOpen ? 'flex-start' : 'center' }}>
+                <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '12px', 
+                    fontSize: '0.8rem', 
+                    color: 'var(--text-muted)', 
+                    justifyContent: isOpen ? 'flex-start' : 'center',
+                    background: 'rgba(0,0,0,0.2)',
+                    padding: isOpen ? '8px 12px' : '8px',
+                    borderRadius: '12px'
+                }}>
+                    <div style={{
+                        width: '10px',
+                        height: '10px',
+                        borderRadius: '50%',
+                        background: serverStatus === 'operational' ? '#22c55e' : '#ef4444',
+                        boxShadow: serverStatus === 'operational' ? '0 0 12px #22c55e' : 'none',
+                        transition: 'background 0.3s'
+                    }}></div>
                     {isOpen && (
-                        <span>
-                            {serverStatus === 'operational' ? 'Systems Normal' : 'Service Issue'}
+                        <span style={{ fontWeight: '600', letterSpacing: '0.5px' }}>
+                            {serverStatus === 'operational' ? 'SYSTEM ONLINE' : 'OFFLINE'}
                         </span>
                     )}
                 </div>
-                {isOpen && (
-                    <div className="update-time">
-                        Updated 5m ago
-                    </div>
-                )}
             </div>
         </aside>
     );

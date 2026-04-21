@@ -5,7 +5,7 @@ import zipfile
 from typing import List, Optional, Any
 
 class MangaService:
-    BASE_URL = "http://127.0.0.1:8001"
+    BASE_URL = "http://localhost:3001"
     PROVIDER = "mangapill"
 
     @staticmethod
@@ -42,6 +42,34 @@ class MangaService:
                 return []
 
     @staticmethod
+    async def get_popular(page: int = 1) -> List[dict]:
+        """
+        Fetches popular manga from the provider.
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                url = f"{MangaService.BASE_URL}/manga/{MangaService.PROVIDER}/popular?page={page}"
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    return []
+                
+                data = resp.json()
+                results = data.get('results', data)
+                if not isinstance(results, list):
+                    return []
+                
+                return [{
+                    "id": item.get('id'),
+                    "title": item.get('title'),
+                    "poster_url": item.get('image') or item.get('poster') or item.get('cover'),
+                    "type": "manga",
+                    "source": "manga"
+                } for item in results]
+            except Exception as e:
+                print(f"[MangaService] Popular error: {e}")
+                return []
+
+    @staticmethod
     async def get_info(manga_id: str) -> Optional[dict]:
         """
         Fetches manga details and chapter list.
@@ -64,7 +92,7 @@ class MangaService:
                     volumes[vol].append({
                         "id": ch.get('id'),
                         "title": ch.get('title'),
-                        "number": ch.get('chapterNumber'),
+                        "number": ch.get('chapterNumber') or ch.get('chapter'),
                         "releaseDate": ch.get('releaseDate')
                     })
                 
@@ -113,7 +141,11 @@ class MangaService:
         """
         Generates a PDF file containing all pages of a chapter.
         """
-        import img2pdf
+        try:
+            import img2pdf
+        except ImportError:
+            print("[MangaService] img2pdf not installed. PDF generation disabled.")
+            return None
         pages = await MangaService.get_pages(chapter_id)
         if not pages:
             return None

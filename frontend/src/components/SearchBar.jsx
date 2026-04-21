@@ -60,93 +60,149 @@ const SearchBar = ({ onSearch, placeholder = "Search..." }) => {
         saveHistory(newHistory);
     };
 
+    const [isFocused, setIsFocused] = useState(false);
+
     return (
-        <div ref={wrapperRef} className="search-container" style={{ position: 'relative' }}>
-            <form onSubmit={handleSubmit}>
-                <div style={{ position: 'relative' }}>
+        <div ref={wrapperRef} className="search-container" style={{ position: 'relative', width: '100%', maxWidth: '800px', margin: '0 auto' }}>
+            <form onSubmit={handleSubmit} style={{ position: 'relative', zIndex: 110 }}>
+                <div style={{
+                    position: 'relative',
+                    transition: 'all 0.4s var(--ease-out)',
+                    transform: isFocused ? 'scale(1.02)' : 'scale(1)',
+                }}>
                     <input
                         type="text"
                         className="input-glass"
                         placeholder={placeholder}
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        onFocus={() => setShowHistory(true)}
-                        style={{ paddingRight: '4rem', width: '100%' }}
+                        onFocus={() => {
+                            setShowHistory(true);
+                            setIsFocused(true);
+                        }}
+                        onBlur={() => setIsFocused(false)}
+                        style={{ 
+                            paddingLeft: '3.5rem', 
+                            paddingRight: '4rem',
+                            background: isFocused ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.3)',
+                            boxShadow: isFocused ? '0 0 30px var(--primary-glow)' : 'none',
+                        }}
                     />
+                    
+                    {/* Search Icon */}
+                    <div style={{
+                        position: 'absolute',
+                        left: '1.5rem',
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        color: isFocused ? 'var(--primary)' : 'var(--text-muted)',
+                        transition: 'color 0.3s',
+                        pointerEvents: 'none'
+                    }}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    </div>
+
+                    {/* Submit Button (Hidden text, shows icon) */}
                     <button
                         type="submit"
                         style={{
                             position: 'absolute',
-                            right: '25px',
+                            right: '1.2rem',
                             top: '50%',
                             transform: 'translateY(-50%)',
-                            background: 'transparent',
+                            background: 'var(--primary-gradient)',
                             border: 'none',
-                            color: 'var(--text-muted)',
+                            color: 'white',
+                            borderRadius: '12px',
+                            padding: '8px 16px',
+                            fontSize: '0.8rem',
+                            fontWeight: 'bold',
                             cursor: 'pointer',
-                            padding: '5px'
+                            opacity: isFocused ? 1 : 0,
+                            transition: 'all 0.3s',
+                            boxShadow: '0 4px 15px var(--primary-glow)'
                         }}
                     >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="11" cy="11" r="8"></circle>
-                            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                        </svg>
+                        GO
                     </button>
                 </div>
             </form>
 
             {/* History Dropdown */}
             {showHistory && history.length > 0 && (
-                <div style={{
+                <div className="glass-panel" style={{
                     position: 'absolute',
-                    top: '100%',
+                    top: 'calc(100% + 15px)',
                     left: 0,
                     right: 0,
-                    background: 'rgba(18, 18, 22, 0.95)',
-                    backdropFilter: 'blur(10px)',
-                    border: '1px solid var(--border-glass)',
-                    borderTop: 'none',
-                    borderRadius: '0 0 12px 12px',
+                    borderRadius: '24px',
+                    padding: '12px',
                     zIndex: 100,
-                    maxHeight: '400px',
-                    overflowY: 'auto',
-                    boxShadow: '0 10px 30px rgba(0,0,0,0.5)'
+                    animation: 'fadeIn 0.4s var(--ease-out)',
+                    border: '1px solid var(--border-bright)',
+                    boxShadow: '0 20px 40px rgba(0,0,0,0.6)'
                 }}>
-                    <div style={{ padding: '8px 12px', fontSize: '0.75rem', color: 'var(--text-muted)', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Recent Searches</span>
-                        <span style={{ cursor: 'pointer' }} onClick={() => saveHistory([])}>Clear All</span>
+                    <div style={{ 
+                        padding: '10px 15px', 
+                        fontSize: '0.75rem', 
+                        color: 'var(--text-dim)', 
+                        display: 'flex', 
+                        justifyContent: 'space-between',
+                        fontWeight: '800',
+                        letterSpacing: '1px'
+                    }}>
+                        <span>RECENT SEARCHES</span>
+                        <span 
+                            style={{ cursor: 'pointer', color: 'var(--primary)', '&:hover': { textDecoration: 'underline' } }} 
+                            onClick={() => saveHistory([])}
+                        >
+                            CLEAR ALL
+                        </span>
                     </div>
                     {history.map((item, idx) => (
                         <div
                             key={idx}
                             onClick={() => handleHistoryClick(item)}
+                            className="history-item-container"
                             style={{
-                                padding: '10px 15px',
+                                padding: '12px 18px',
                                 cursor: 'pointer',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'space-between',
-                                borderBottom: '1px solid rgba(255,255,255,0.05)',
-                                color: 'rgba(255,255,255,0.8)',
-                                transition: 'background 0.2s'
+                                borderRadius: '16px',
+                                color: 'var(--text-main)',
+                                transition: 'all 0.2s',
+                                marginTop: '4px'
                             }}
-                            onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+                            onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'}
                             onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                         >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ opacity: 0.5 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" style={{ opacity: 0.6 }}>
                                     <circle cx="12" cy="12" r="10"></circle>
                                     <polyline points="12 6 12 12 16 14"></polyline>
                                 </svg>
-                                {item}
+                                <span style={{ fontWeight: '500' }}>{item}</span>
                             </div>
                             <button
                                 onClick={(e) => deleteHistoryItem(e, item)}
-                                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', opacity: 0.5, padding: '4px' }}
-                                onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
-                                onMouseLeave={(e) => e.currentTarget.style.opacity = 0.5}
+                                className="remove-history-btn"
+                                style={{ 
+                                    background: 'rgba(255,255,255,0.1)', 
+                                    border: 'none', 
+                                    color: 'var(--text-muted)', 
+                                    cursor: 'pointer', 
+                                    opacity: 0, 
+                                    padding: '6px',
+                                    borderRadius: '50%',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    transition: 'all 0.2s'
+                                }}
                             >
-                                x
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                             </button>
                         </div>
                     ))}

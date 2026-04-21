@@ -1,35 +1,37 @@
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, Response, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Any, Union, get_origin, get_args
-import asyncio
-from moviebox_api import Session, Search, SubjectType, MovieAuto, TVSeriesDetails, Homepage
-from moviebox_api.download import (
+from typing import List, Optional, Any
+from moviebox_api.v1 import Session, Search, SubjectType, MovieAuto, TVSeriesDetails, Homepage
+from moviebox_api.v1.download import (
     MediaFileDownloader, 
     DownloadableMovieFilesDetail, 
     DownloadableTVSeriesFilesDetail,
     resolve_media_file_to_be_downloaded
 )
-from moviebox_api.extractor._core import ItemJsonDetailsModel
-from moviebox_api.extractor.models.json import SubjectModel, SubjectTrailerModel
-from moviebox_api.models import SearchResultsItem
+from moviebox_api.v1.extractor._core import ItemJsonDetailsModel
+from moviebox_api.v1.extractor.models.json import SubjectModel, SubjectTrailerModel
+from moviebox_api.v1.models import SearchResultsItem
 from cinecli_service import CineCLIService
 from mal_service import MALService
 from manga_service import MangaService
 from music_service import MusicService
-from novel_service import NovelService
 from tv_service import TVService
-import os
-import lncrawl.server.api
-from gaanapy.app import app as gaanapy_app
+from radio_service import RadioService
+from anilist_service import AnilistService
+from typing import Optional, Union, get_args, get_origin
+import pydantic
+import asyncio
+import sys
+import uuid
 import json
 import subprocess
 import shutil
 import httpx
 import traceback
-import uuid
-import yt_dlp
 from urllib.parse import quote
+import yt_dlp
+
 
 # --- Monkeypatch for Pydantic Validation Error ---
 def unwrap_annotation(annotation):
@@ -73,204 +75,11 @@ patch_moviebox_models()
 
 router = APIRouter()
 
-router.include_router(lncrawl.server.api.router, prefix="/lncrawl")
-router.include_router(gaanapy_app.router, prefix="/music")
-
-ANIME_API_BASE = "http://127.0.0.1:8001/anime"
-MANGA_API_BASE = "http://127.0.0.1:8001/manga"
-NEWS_API_BASE = "http://127.0.0.1:8001/news"
-
-import time
-API_LOG_FILE = os.path.join(os.path.expanduser("~"), "genga_api_debug.log")
-def api_log(msg):
-    try:
-        with open(API_LOG_FILE, "a") as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-    except: pass
-
-@router.get("/news/latest")
-async def get_news_latest():
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(f"{NEWS_API_BASE}/latest", timeout=20.0)
-            if res.status_code == 200:
-                return res.json()
-            return {"results": []}
-    except Exception as e:
-        print(f"[News] Bridge error: {e}")
-        return {"results": []}
-
-@router.get("/news/info")
-async def get_news_info(id: str):
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(f"{NEWS_API_BASE}/info", params={"id": id}, timeout=10.0)
-            return res.json()
-    except Exception as e:
-        print(f"[News Info] Bridge error: {e}")
-        return {"title": "Error", "content": "Could not fetch story."}
-
-@router.get("/anime/home")
-async def get_anime_home():
-    # Retry logic for bridge startup
-    max_retries = 5
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient() as client:
-                res = await client.get(f"{ANIME_API_BASE}/home", timeout=30.0)
-                if res.status_code == 200:
-                    return res.json()
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
-            if attempt < max_retries - 1:
-                api_log(f"Bridge not ready or timeout, retrying... (Attempt {attempt+1})")
-                await asyncio.sleep(3.0) # Wait a bit longer
-            else:
-                api_log(f"Bridge failed after {max_retries} attempts: {e}")
-        except Exception as e:
-            api_log(f"Anime Home error: {e}")
-            break
-    return []
-
-@router.get("/anime/search")
-async def get_anime_search(query: str):
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(f"{ANIME_API_BASE}/search", params={"query": query}, timeout=30.0)
-            if res.status_code == 200:
-                return res.json()
-            return []
-    except Exception as e:
-        api_log(f"Anime search error: {e}")
-        return []
-
-@router.get("/anime/details/{anime_id}")
-async def get_anime_details(anime_id: str):
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(f"{ANIME_API_BASE}/details/{anime_id}", timeout=20.0)
-            return res.json()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/anime/episodes/{anime_id}")
-async def get_anime_episodes(anime_id: str):
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient() as client:
-                res = await client.get(f"{ANIME_API_BASE}/episodes/{anime_id}", timeout=15.0)
-                if res.status_code == 200:
-                    return res.json()
-        except Exception as e:
-            if attempt == max_retries - 1:
-                print(f"Failed to fetch anime episodes after {max_retries} attempts: {e}")
-        if attempt < max_retries - 1:
-            await asyncio.sleep(1)
-    return {"status": 500, "data": {"episodes": []}}
-
-@router.get("/anime/sources")
-async def get_anime_sources(episode_id: str, category: str = "sub"):
-    max_retries = 3
-    last_err = None
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient() as client:
-                res = await client.get(f"{ANIME_API_BASE}/sources", params={"episodeId": episode_id, "category": category}, timeout=15.0)
-                if res.status_code == 200:
-                    return res.json()
-                last_err = f"Status {res.status_code}"
-        except Exception as e:
-            last_err = str(e)
-        if attempt < max_retries - 1:
-            await asyncio.sleep(1)
-    raise HTTPException(status_code=500, detail=f"Anime sources failed after 3 attempts: {last_err}")
-
-
-@router.get("/manga/search")
-async def search_manga(query: str):
-    try:
-        # Pass all popular/trending to MangaService which filters keywords
-        results = await MangaService.search(query)
-        # Results already normalized by MangaService
-        return {"results": results}
-    except Exception as e:
-        return {"results": []}
-
-@router.get("/manga/details/{manga_id:path}")
-async def get_manga_details(manga_id: str):
-    try:
-        return await MangaService.get_info(manga_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/manga/read")
-async def get_manga_pages(chapterId: str):
-    try:
-        return await MangaService.get_pages(chapterId)
-    except Exception as e:
-        return []
-
-@router.get("/tv/resolve")
-async def resolve_tv_stream(url: str):
-    """
-    Resolves YouTube URLs into direct streams using yt-dlp python module.
-    Falls back to youtube-nocookie.com embed if yt-dlp fails.
-    """
-    import logging
-    # Canonicalize URL for detection
-    lookup_url = url.lower()
-    is_youtube = "youtube.com" in lookup_url or "youtu.be" in lookup_url or "youtube-nocookie.com" in lookup_url
-    
-    if is_youtube:
-        api_log(f"Resolving YouTube via yt-dlp: {url}")
-        import re
-        vid_id = None
-        patterns = [r'[?&]v=([A-Za-z0-9_-]{11})', r'/embed/([A-Za-z0-9_-]{11})', r'youtu\.be/([A-Za-z0-9_-]{11})']
-        for p in patterns:
-            mm = re.search(p, url)
-            if mm:
-                vid_id = mm.group(1)
-                break
-        
-        target = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else url
-        
-        try:
-            ydl_opts = {
-                'format': 'best[ext=mp4]/best',
-                'quiet': True,
-                'no_warnings': True,
-                'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                'referer': "https://www.youtube.com/",
-                'nocheckcertificate': True
-            }
-            # Run blocking yt_dlp extraction in an executor
-            loop = asyncio.get_event_loop()
-            def extract():
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    return ydl.extract_info(target, download=False)
-            
-            info = await loop.run_in_executor(None, extract)
-            if info:
-                stream_url = info.get('url') or (info.get('formats')[-1]['url'] if info.get('formats') else None)
-                if stream_url:
-                    api_log(f"YouTube Success via yt_dlp: {stream_url[:60]}...")
-                    return {"url": stream_url, "type": "hls"}
-        except Exception as e:
-            api_log(f"yt_dlp extraction failed for {target}: {e}")
-
-        # Final Embed fallback if direct stream resolution failed
-        if vid_id:
-            fallback_embed = f"https://www.youtube-nocookie.com/embed/{vid_id}?autoplay=1"
-            api_log(f"YouTube Direct Stream Failed. Using Embed fallback: {fallback_embed}")
-            return {"url": fallback_embed, "type": "embed"}
-            
-    return {"url": url, "type": "hls"}
-
 
 manga_service = MangaService()
 music_service = MusicService()
-novel_service = NovelService()
 tv_service = TVService()
+radio_service = RadioService()
 
 DEFAULT_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -421,26 +230,14 @@ def get_source_headers(url: str, source: str = None) -> list[dict]:
                 configs_refs.append(session_cfg)
 
     # 2. Add heuristics if session headers didn't cover it or for variety
-    if source == 'hianime':
-        configs_refs.append({'Referer': 'https://hianime.to/', 'Origin': 'https://hianime.to'})
-
-    # User Request: Use these specific headers for Anime/Kwik streams
-    if source == 'animepahe' or 'animepahe' in url_lower or 'kwik' in url_lower:
-        configs_refs.insert(0, {
-            'Referer': 'https://kwik.cx/',
-            'Origin': 'https://kwik.cx',
-            'User-Agent': 'Mozilla/5.0'
-        })
-        configs_refs.append({'Referer': 'https://animepahe.com'})
-        configs_refs.append({'Referer': 'https://animepahe.ru'})
-        configs_refs.append({'Referer': 'https://animepahe.com/'})
-        configs_refs.append({'Referer': 'https://animepahe.ru/'})
+    if source == 'anilist':
+        configs_refs.append({'Referer': 'https://megaplay.buzz/', 'Origin': 'https://megaplay.buzz'})
 
     if "megaplay.buzz" in url_lower:
         configs_refs.append({'Referer': 'https://megaplay.buzz/', 'Origin': 'https://megaplay.buzz'})
         
-    if "hianime" in url_lower or "aniwatch" in url_lower or "megacloud" in url_lower or "vidcloud" in url_lower or "rabbitstream" in url_lower:
-        configs_refs.append({'Referer': 'https://hianime.to/', 'Origin': 'https://hianime.to'})
+    if "anilist" in url_lower or "megacloud" in url_lower or "vidcloud" in url_lower or "rabbitstream" in url_lower:
+        configs_refs.append({'Referer': 'https://megaplay.buzz/', 'Origin': 'https://megaplay.buzz'})
     
     # VLC/MPV mimicking for TV streams (helps bypass browser-based throttling)
     if source == 'tv':
@@ -661,9 +458,6 @@ async def extract_item_poster(item: Any) -> Optional[str]:
                     poster_url = str(val.url) if hasattr(val, 'url') else str(val)
                     break
                     
-    if poster_url and isinstance(poster_url, str) and poster_url.startswith('//'):
-        poster_url = 'https:' + poster_url
-                
     return poster_url
 
 @router.get("/search", response_model=dict)
@@ -671,7 +465,6 @@ async def search(query: str, page: int = 1, content_type: str = "all") -> dict:
     """
     Searches for content using moviebox-api.
     """
-    api_log(f"Search requested: query='{query}', content_type='{content_type}', page={page}")
     try:
         subject_type = SubjectType.ALL
         if content_type.lower() == "movie":
@@ -724,36 +517,18 @@ async def search(query: str, page: int = 1, content_type: str = "all") -> dict:
         
         return {"results": items}
     except UnicodeDecodeError as e:
-        api_log(f"[ENCODING ERROR IN SEARCH] {e}")
-        return {"results": [], "error": "encoding"}
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ENCODING ERROR IN SEARCH] {e}")
+        print(f"Traceback:\n{error_details}")
+        raise HTTPException(status_code=500, detail=f"Encoding error: {str(e)}")
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        api_log(f"[SEARCH ERROR] {e}\n{error_details}")
-        return {"results": [], "error": str(e)}
+        print(f"[SEARCH ERROR] {e}")
+        print(f"Traceback:\n{error_details}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/novel/search")
-async def search_novels(query: str = "", limit: int = 20):
-    results = await novel_service.search_novels(query, limit)
-    # novel_service.search_novels now returns a plain list
-    return {"results": results if isinstance(results, list) else []}
-
-
-@router.get("/novel/info")
-async def get_novel_info(id: Optional[str] = None, url: Optional[str] = None):
-    info = await novel_service.get_novel_info(novel_id=id, url=url)
-    if not info:
-        raise HTTPException(status_code=404, detail="Novel not found")
-    return info
-
-@router.get("/novel/chapter")
-@router.get("/api/novel/chapter")
-async def get_novel_chapter(id: str = None, url: str = None, format: str = "html"):
-    content = await novel_service.get_chapter_content(id, url, format)
-
-    if not content:
-        raise HTTPException(status_code=404, detail="Chapter not found")
-    return content
 
 # --- TV Endpoints ---
 @router.get("/tv/countries")
@@ -766,9 +541,69 @@ async def get_tv_channels_by_country(code: str):
     channels = await tv_service.get_channels_by_country(code)
     return {"results": channels}
 
+@router.get("/tv/resolve-yt-v3/{yt_id}")
+async def resolve_youtube_hls(yt_id: str):
+    """
+    Uses yt-dlp library to resolve a direct YouTube HLS (.m3u8) URL.
+    This replaces unstable third-party proxies and works without an external .exe.
+    """
+    try:
+        # Determine URL: 11 chars is a video ID, otherwise it's likely a channel ID for /live
+        if len(yt_id) == 11:
+            url = f"https://www.youtube.com/watch?v={yt_id}"
+        elif yt_id.startswith("UC") or yt_id.startswith("HC") or yt_id.startswith("I"):
+            url = f"https://www.youtube.com/channel/{yt_id}/live"
+        else:
+            # Fallback for other ID types (handle, etc)
+            url = f"https://www.youtube.com/@{yt_id}/live" if not yt_id.startswith("http") else yt_id
+            
+        print(f"[YT-DLP] Resolving URL via sync subprocess (threaded): {url}")
+        
+        def _get_yt_url():
+            import yt_dlp
+            ydl_opts = {
+                'format': 'best',
+                'quiet': True,
+                'no_warnings': True,
+                'nocheckcertificate': True,
+                'extract_flat': False
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return info.get('url')
+            
+        try:
+            # Offload the blocking network call to a separate thread
+            stream_url = await asyncio.to_thread(_get_yt_url)
+            
+            if stream_url and stream_url.startswith("http"):
+                print(f"[YT-DLP] Resolved: {stream_url[:50]}...")
+                return {"url": stream_url, "type": "hls" if ".m3u8" in stream_url else "mp4", "v": "3"}
+            else:
+                return {"error": f"Invalid or no URL returned.", "v": "3"}
+        except Exception as thread_e:
+            return {"error": f"Extraction error: {str(thread_e)}", "v": "3"}
+
+            
+    except Exception as e:
+        error_msg = str(e) or repr(e)
+        print(f"[YT-DLP FATAL] {error_msg}")
+        return {"error": error_msg, "v": "3"}
+
 @router.get("/tv/category/{category}")
 async def get_tv_channels_by_category(category: str):
     channels = await tv_service.get_channels_by_category(category)
+    return {"results": channels}
+
+# --- Radio Endpoints ---
+@router.get("/radio/countries")
+async def get_radio_countries():
+    countries = await radio_service.get_countries()
+    return {"results": countries}
+
+@router.get("/radio/country/{code}")
+async def get_radio_channels_by_country(code: str):
+    channels = await radio_service.get_channels_by_country(code)
     return {"results": channels}
 
 async def warmup_session() -> None:
@@ -988,7 +823,7 @@ async def details(item_id: str) -> dict:
             
             # We still need a search instance to call get_item_details
             # An empty query search instance is fine for details fetching
-            from moviebox_api import Search
+            from moviebox_api.v1 import Search
             search_instance = Search(session=session, query='', subject_type=subject_type)
             
             # Update cache so we don't do this again if refreshed
@@ -1823,177 +1658,78 @@ async def proxy_stream(request: Request, url: str, source: str = None):
 
 
 
-# --- HiAnime Section ---
+# --- Anilist & MegaPlay Section ---
 
 @router.get("/anime/home")
 async def get_anime_home():
     try:
-        url = f"{ANIME_API_BASE}/home"
-        print(f"[HiAnime] Requesting Home: {url}")
-        client = get_http_client()
-        response = await client.get(url, timeout=30.0)
-        if response.status_code != 200:
-            print(f"[HiAnime] Home API error {response.status_code}: {response.text[:200]}")
-            raise HTTPException(status_code=response.status_code, detail=f"Upstream error: {response.status_code}")
+        trending = await AnilistService.get_trending(per_page=50)
+        top_100 = await AnilistService.get_top_100(per_page=100)
         
-        try:
-            data = response.json()
-            normalized_groups = []
-            if data.get('status') == 200 and data.get('data'):
-                d = data['data']
-                if d.get('spotlightAnimes'):
-                    normalized_groups.append({
-                        "title": "Spotlight",
-                        "items": [{
-                            "id": a.get('id'),
-                            "title": a.get('name'),
-                            "poster_url": a.get('poster'),
-                            "year": a.get('type') or "Anime",
-                            "type": "anime",
-                            "source": "hianime"
-                        } for a in d['spotlightAnimes']]
-                    })
-                if d.get('trendingAnimes'):
-                    normalized_groups.append({
-                        "title": "Trending",
-                        "items": [{
-                            "id": a.get('id'),
-                            "title": a.get('name'),
-                            "poster_url": a.get('poster'),
-                            "year": a.get('type') or "Anime",
-                            "type": "anime",
-                            "source": "hianime"
-                        } for a in d['trendingAnimes']]
-                    })
-                if d.get('latestEpisodeAnimes'):
-                    normalized_groups.append({
-                        "title": "Latest Episodes",
-                        "items": [{
-                            "id": a.get('id'),
-                            "title": a.get('name'),
-                            "poster_url": a.get('poster'),
-                            "year": a.get('type') or "Anime",
-                            "type": "anime",
-                            "source": "hianime"
-                        } for a in d['latestEpisodeAnimes']]
-                    })
-                if d.get('topUpcomingAnimes'):
-                    normalized_groups.append({
-                        "title": "Upcoming",
-                        "items": [{
-                            "id": a.get('id'),
-                            "title": a.get('name'),
-                            "poster_url": a.get('poster'),
-                            "year": a.get('type') or "Anime",
-                            "type": "anime",
-                            "source": "hianime"
-                        } for a in d['topUpcomingAnimes']]
-                    })
-            return normalized_groups
-        except Exception as json_err:
-            print(f"[HiAnime] Home JSON Parse error: {json_err} | Body: {response.text[:500]}")
-            raise HTTPException(status_code=500, detail="Malformed upstream response")
+        return [
+            {"title": "Trending Now", "items": trending},
+            {"title": "Top 100 Anime", "items": top_100}
+        ]
     except Exception as e:
-        print(f"HiAnime Home fatal error: {e}")
-        traceback.print_exc()
+        print(f"Anilist Home error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/anime/top-100")
+async def get_anime_top_100(page: int = 1):
+    try:
+        return await AnilistService.get_top_100(page=page)
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/anime/search")
 async def search_anime(query: str, page: int = 1):
     try:
-        url = f"{ANIME_API_BASE}/search?q={quote(query)}&page={page}"
-        print(f"[HiAnime] Searching: {url}")
-        client = get_http_client()
-        response = await client.get(url, timeout=30.0)
-        if response.status_code != 200:
-            print(f"[HiAnime] Search API error {response.status_code}: {response.text[:200]}")
-            raise HTTPException(status_code=response.status_code, detail=f"Upstream error: {response.status_code}")
-        
-        try:
-            data = response.json()
-            # Normalize to flat list for frontend
-            results = []
-            if data.get('status') == 200 and data.get('data'):
-                animes = data['data'].get('animes', [])
-                for a in animes:
-                    results.append({
-                        "id": a.get('id'),
-                        "title": a.get('name'),
-                        "poster_url": a.get('poster'),
-                        "year": a.get('type') or "Anime",
-                        "type": "anime",
-                        "source": "hianime"
-                    })
-            return results
-        except Exception as json_err:
-            print(f"[HiAnime] Search JSON Parse error: {json_err} | Body: {response.text[:500]}")
-            raise HTTPException(status_code=500, detail="Malformed upstream response")
+        return await AnilistService.search(query, page=page)
     except Exception as e:
-        print(f"HiAnime Search fatal error: {e}")
-        traceback.print_exc()
+        print(f"Anilist Search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/anime/details/{anime_id}")
 async def get_anime_details(anime_id: str):
     try:
-        about_url = f"{ANIME_API_BASE}/anime/{anime_id}"
-        client = get_http_client()
-        about_res = await client.get(about_url, timeout=30.0)
-        
-        if about_res.status_code != 200:
-            print(f"[HiAnime] Details API error {about_res.status_code} for {anime_id}")
-            return {"error": f"API returned {about_res.status_code}", "status": about_res.status_code, "id": anime_id}
-
-        try:
-            about_data = about_res.json()
-        except Exception as e:
-            print(f"[HiAnime] JSON error for {anime_id}: {e}")
-            return {"error": "Invalid JSON from API", "status": 500, "id": anime_id}
-        
-        if about_data.get("status") == 200 and "data" in about_data:
-            anime = about_data["data"]["anime"]
-            info = anime.get("info", {})
-            more_info = anime.get("moreInfo", {})
-            
-            return {
-                "id": anime_id,
-                "title": info.get("name", "Unknown"),
-                "plot": info.get("description", ""),
-                "poster_url": info.get("poster", ""),
-                "rating": more_info.get("status", "N/A"),
-                "rating_value": float(anime.get("stats", {}).get("rating", 0)) if anime.get("stats", {}).get("rating") else 0,
-                "year": more_info.get("aired", "N/A"),
-                "type": "anime",
-                "episodes_data": about_data["data"].get("seasons") or []
-            }
-        
-        return {"error": "Failed to fetch anime details", "status": about_data.get("status"), "id": anime_id}
+        info = await AnilistService.get_info(anime_id)
+        if not info:
+            raise HTTPException(status_code=404, detail="Anime not found")
+        return info
     except Exception as e:
-        print(f"HiAnime Details error: {e}")
-        traceback.print_exc()
+        print(f"Anilist Details error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
 
 @router.get("/anime/episodes/{anime_id}")
 async def get_anime_episodes(anime_id: str):
     try:
-        url = f"{ANIME_API_BASE}/episodes"
-        client = get_http_client()
-        response = await client.get(url, params={"id": anime_id}, timeout=30.0)
-        return response.json()
+        info = await AnilistService.get_info(anime_id)
+        if not info: 
+            return {"status": 404, "data": {"episodes": []}}
+        
+        count = info.get('episodes_count')
+        
+        # If episodes_count is None (airing), check if we have airing episode info
+        if not count and info.get('next_episode'):
+            count = int(info['next_episode']) - 1
+            
+        if not count: count = 1 # Fallback
+        
+        episodes = []
+        for i in range(1, int(count) + 1):
+            episodes.append({
+                "number": i,
+                "episodeId": str(i),
+                "title": f"Episode {i}"
+            })
+        return {"status": 200, "data": {"episodes": episodes}}
     except Exception as e:
-        print(f"HiAnime Episodes error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Anilist Episodes error: {e}")
+        return {"status": 200, "data": {"episodes": []}}
 
-@router.get("/anime/servers")
-async def get_anime_servers(episode_id: str):
-    try:
-        url = f"{ANIME_API_BASE}/servers"
-        client = get_http_client()
-        response = await client.get(url, params={"episodeId": episode_id}, timeout=30.0)
-        return response.json()
-    except Exception as e:
-        print(f"HiAnime Servers error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Removed anime/servers as MegaPlay uses direct embed
 
 @router.get("/iframe-proxy")
 async def iframe_proxy(url: str):
@@ -2021,7 +1757,7 @@ async def iframe_proxy(url: str):
             'use strict';
             console.log("[AdBlock] STRICT MODE ACTIVE");
             
-            var ALLOWED = ['megaplay.buzz', 'megacloud.tv', 'megacloud.blog', 'hianime.to', 'localhost', '127.0.0.1'];
+            var ALLOWED = ['megaplay.buzz', 'megacloud.tv', 'megacloud.blog', 'anilist.co', 'localhost', '127.0.0.1'];
             
             function isAllowed(urlStr) {{
                 try {{
@@ -2128,6 +1864,24 @@ async def iframe_proxy(url: str):
             window.addEventListener('beforeunload', function(e) {{
                 delete e.returnValue;
             }});
+
+            // 9. ANTI-DEBUGGER PROTECTION (Prevents UI freezing)
+            var originalFunction = window.Function;
+            window.Function = function(str) {{
+                if (str && str.indexOf('debugger') !== -1) {{
+                    console.log("[AdBlock] Stripping debugger...");
+                    str = str.replace(/debugger/g, ' ');
+                }}
+                return originalFunction(str);
+            }};
+            var originalEval = window.eval;
+            window.eval = function(str) {{
+                if (str && typeof str === 'string' && str.indexOf('debugger') !== -1) {{
+                    console.log("[AdBlock] Stripped debugger from eval");
+                    str = str.replace(/debugger/g, ' ');
+                }}
+                return originalEval(str);
+            }};
             
             // 9. Remove ad elements on load
             function removeAds() {{
@@ -2165,8 +1919,8 @@ async def iframe_proxy(url: str):
             frameborder="0"
             scrolling="no"
             allowfullscreen
-            allow="autoplay; encrypted-media; fullscreen"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-presentation">
+            allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+            style="width:100%;height:100%;border:none;">
         </iframe>
     </div>
 </body>
@@ -2175,47 +1929,23 @@ async def iframe_proxy(url: str):
     return Response(content=html_content, media_type="text/html")
 
 @router.get("/anime/sources")
-async def get_anime_sources(episode_id: str, server: str = "vidcloud", category: str = "sub"):
+async def get_anime_sources(episode_id: str, anime_id: str = None, category: str = "sub"):
     """
-    Fetches anime stream sources, attempting multiple servers and providers if needed.
+    Returns the MegaPlay embed URL for the given Anilist ID and episode number.
     """
-    # providers = [
-    #     "https://hianime-api.vercel.app/api/v1",
-    #     ANIME_API_BASE
-    # ]
-    provider = ANIME_API_BASE
+    if not anime_id:
+        # If frontend didn't pass anime_id explicitly, we assume episode_id might contain it or be the ep number
+        # But for Anilist switch, we expect both.
+        raise HTTPException(status_code=400, detail="Anilist ID required")
     
-    # User Request: Prioritize hd-2, but keep backups to prevent 404s.
-    # We try hd-2 first, then others if it fails.
-    servers = ["hd-2", "megacloud", "vidcloud"] 
-    
-    # If a specific server was requested via `server` param that isn't in our list, 
-    # we could add it, but for now strict optimization.
-
-    client = get_http_client()
-    for s in servers:
-        try:
-            url = f"{provider}/episode/sources?animeEpisodeId={quote(episode_id)}&server={s}&category={category}"
-            response = await client.get(url, timeout=15.0)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("status") == 200 and data.get("data", {}).get("sources"):
-                    print(f"[HiAnime] Success with {s} on {provider}")
-                    
-                    # If any source is Megaplay, ensure it's marked as 'embed'
-                    for src in data["data"]["sources"]:
-                        if "megaplay.buzz" in src.get("url", ""):
-                            src["type"] = "embed"
-                    return data
-                else:
-                    print(f"[HiAnime] API returned 200 but no sources for {s} on {provider}: {data.get('message')}")
-            else:
-                print(f"[HiAnime] Provider {provider} returned {response.status_code} for {s}")
-        except Exception as e:
-            print(f"[HiAnime] Error fetching from {provider} for {s}: {e}")
-            continue
-
-    raise HTTPException(status_code=404, detail="No working stream sources found for this episode.")
+    # Endpoint: https://megaplay.buzz/stream/ani/{anilist-id}/{ep-num}/{language}
+    url = f"https://megaplay.buzz/stream/ani/{anime_id}/{episode_id}/{category}"
+    return {
+        "status": 200,
+        "data": {
+            "sources": [{"url": url, "type": "embed"}]
+        }
+    }
 
 # --- CineCLI & Proxy Routes ---
 
@@ -2238,44 +1968,7 @@ async def cinecli_details(movie_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Movie not found")
     return details
 
-# --- Ani-CLI (Allmanga/Gogo) Routes ---
-from anicli_service import AniCliService
 
-@router.get("/anicli/search")
-async def anicli_search(query: str) -> dict:
-    """
-    Search for anime via Ani-CLI (GogoAnime scraper).
-    """
-    results = await AniCliService.search(query)
-    return {"results": results}
-
-@router.get("/anicli/details/{anime_id}")
-async def anicli_details(anime_id: str) -> dict:
-    """
-    Get details and episodes for an Ani-CLI anime.
-    """
-    details = await AniCliService.get_details(anime_id)
-    if not details:
-        raise HTTPException(status_code=404, detail="Anime not found")
-    return details
-
-@router.get("/anicli/stream")
-async def anicli_stream(episode_id: str) -> dict:
-    """
-    Get stream URL (embed) for an Ani-CLI episode.
-    """
-    url = await AniCliService.get_stream_url(episode_id)
-    if not url:
-        raise HTTPException(status_code=404, detail="Stream not found")
-    return {"url": url}
-
-@router.get("/anicli/home")
-async def anicli_home() -> dict:
-    """
-    Get homepage content for Ani-CLI (recent releases).
-    """
-    results = await AniCliService.get_homepage()
-    return {"results": results}
 
 
 @router.get("/iframe-proxy")
@@ -2553,6 +2246,10 @@ async def get_skip_times(mal_id: int, episode_number: float):
 async def manga_search(query: str):
     return {"results": await MangaService.search(query)}
 
+@router.get("/manga/mangapill/popular")
+async def manga_popular(page: int = 1):
+    return {"results": await MangaService.get_popular(page)}
+
 @router.get("/manga/details/{manga_id:path}")
 async def manga_details(manga_id: str):
     info = await MangaService.get_info(manga_id)
@@ -2579,14 +2276,75 @@ async def manga_pdf(chapter_id: str):
 
 @router.get("/manga/download/{chapter_id:path}")
 async def manga_download(chapter_id: str, title: str = "chapter"):
-    zip_buffer = await MangaService.create_chapter_zip(chapter_id, title)
-    if not zip_buffer:
-        raise HTTPException(status_code=500, detail="Failed to create ZIP")
-    
+    safe_title = title.replace("/", "_").replace('"', '').replace("'", "").strip()
+
+    async def zip_generator():
+        import os as _os
+        import threading as _threading
+        import zipfile as _zipfile
+        import httpx as _httpx
+
+        # Fetch page URLs here — HTTP headers already sent so save dialog is already open
+        pages = await MangaService.get_pages(chapter_id)
+        if not pages:
+            return
+
+        # Pipe: write end → zipfile writer in thread; read end → HTTP response
+        rd, wr = _os.pipe()
+        reader   = _os.fdopen(rd, 'rb')
+        writer_raw = _os.fdopen(wr, 'wb')
+
+        def build_zip():
+            """Run in a daemon thread: download pages and write into the ZIP pipe."""
+            try:
+                # ZIP_STORED + non-seekable stream → Python uses data descriptors (no seek needed)
+                with _zipfile.ZipFile(writer_raw, 'w', _zipfile.ZIP_STORED) as zf:
+                    for i, page in enumerate(pages):
+                        try:
+                            resp = _httpx.get(
+                                page['img'],
+                                headers=page.get('headerForImage', {}),
+                                timeout=30.0,
+                                follow_redirects=True
+                            )
+                            if resp.status_code == 200:
+                                url  = page['img']
+                                ext  = url.split('.')[-1].split('?')[0] if '.' in url else 'jpg'
+                                if len(ext) > 4:
+                                    ext = 'jpg'
+                                zf.writestr(f"page_{i+1:03d}.{ext}", resp.content)
+                        except Exception as page_err:
+                            print(f"[MANGA ZIP] Page {i+1} error: {page_err}")
+            except Exception as fatal:
+                print(f"[MANGA ZIP] Fatal error: {fatal}")
+            finally:
+                try:
+                    writer_raw.close()
+                except Exception:
+                    pass
+
+        # Start the background zip builder — response headers already sent by now
+        t = _threading.Thread(target=build_zip, daemon=True)
+        t.start()
+
+        # Yield chunks from the read end of the pipe
+        loop = asyncio.get_event_loop()
+        try:
+            while True:
+                chunk = await loop.run_in_executor(None, reader.read, 65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                reader.close()
+            except Exception:
+                pass
+
     return StreamingResponse(
-        zip_buffer,
+        zip_generator(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{title.replace("/", "_")}.zip"'}
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}.zip"'}
     )
 
 @router.get("/manga/save-local/{chapter_id:path}")
@@ -2629,72 +2387,6 @@ async def manga_image_proxy(url: str, referer: str = "https://mangapill.com/"):
     except Exception as e:
         print(f"[IMAGE PROXY FATAL] {e} for {url[:50]}")
         return Response(content=str(e), status_code=500)
-
-@router.get("/anime/image-proxy")
-async def anime_image_proxy(url: str):
-    """
-    Dedicated proxy for Anime posters (AnimePahe/Kwik).
-    Exhaustively tries multiple referer variants to bypass hotlinking protection.
-    """
-    if not url or url == "null":
-        return Response(content="Invalid URL", status_code=400)
-    
-    url_lower = url.lower()
-    variants = []
-    
-    # 1. Standard HiAnime/AnimeSama variants
-    if "anime-sama" in url_lower:
-        variants.append({"Referer": "https://anime-sama.me/"})
-    
-    # 2. AnimePahe/Kwik variants (The most common source of 403)
-    if "animepahe" in url_lower or "kwik" in url_lower or "i.animepahe.si" in url_lower:
-        variants.append({"Referer": "https://animepahe.com/"})
-        variants.append({"Referer": "https://animepahe.ru/"})
-        variants.append({"Referer": "https://animepahe.org/"})
-        variants.append({"Referer": "https://animepahe.ru"})
-        variants.append({"Referer": "https://animepahe.com"})
-        variants.append({"Referer": "https://kwik.cx/", "Origin": "https://kwik.cx"})
-        # Self-referer fallback
-        try:
-             from urllib.parse import urlparse
-             parsed = urlparse(url)
-             variants.append({"Referer": f"{parsed.scheme}://{parsed.netloc}/"})
-        except: pass
-
-    # Always add a generic fallback
-    variants.append({"Referer": ""})
-
-    client = get_http_client()
-    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-    
-    last_status = 0
-    for headers in variants:
-        try:
-            full_headers = headers.copy()
-            full_headers["User-Agent"] = ua
-            resp = await client.get(url, headers=full_headers, follow_redirects=True, timeout=12.0)
-            
-            if resp.status_code == 200:
-                return Response(
-                    content=resp.content,
-                    media_type=resp.headers.get("Content-Type", "image/jpeg"),
-                    headers={
-                        "Cache-Control": "public, max-age=31536000",
-                        "Access-Control-Allow-Origin": "*",
-                        "Cross-Origin-Resource-Policy": "cross-origin",
-                        "X-Proxy-Type": "Anime",
-                        "X-Proxy-Status": f"Success-Ref-{headers.get('Referer')}"
-                    }
-                )
-            last_status = resp.status_code
-            if last_status != 403: # If not forbidden, maybe it's 404/500, no use retrying refs
-                break
-        except Exception as e:
-            print(f"[ANIME PROXY ATTEMPT ERROR] {e}")
-
-    # If all variants failed
-    print(f"[ANIME PROXY FATAL] All variants failed for {url[:60]}... Last Status: {last_status}")
-    return Response(content=f"Error {last_status}", status_code=last_status if last_status else 500)
 
 @router.get("/image-proxy")
 async def generic_image_proxy(url: str, referer: str = None):
@@ -2874,3 +2566,29 @@ async def get_music_info(seokey: str, type: Optional[str] = "music"):
     except Exception as e:
         print(f"[Music] Info error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- News Proxy Endpoints for Node Bridge ---
+@router.get("/news/ann/info")
+async def get_news_info(id: str):
+    try:
+        client = get_http_client()
+        resp = await client.get(f"http://localhost:3001/news/ann/info?id={id}")
+        if resp.status_code == 200:
+            return resp.json()
+        raise HTTPException(status_code=resp.status_code, detail="Node bridge error")
+    except Exception as e:
+        print(f"[News Proxy] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/news/ann/recent-feeds")
+async def get_news_recent_feeds():
+    try:
+        client = get_http_client()
+        resp = await client.get(f"http://localhost:3001/news/ann/recent-feeds")
+        if resp.status_code == 200:
+            return resp.json()
+        raise HTTPException(status_code=resp.status_code, detail="Node bridge error")
+    except Exception as e:
+        print(f"[News Proxy] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

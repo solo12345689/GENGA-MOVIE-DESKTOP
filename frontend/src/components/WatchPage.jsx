@@ -13,7 +13,7 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
     const [subtitles, setSubtitles] = useState([]);
     const [loadingStream, setLoadingStream] = useState(false);
     const [seasonsData, setSeasonsData] = useState(item.seasons || []); // For MovieBox
-    const [animeEpisodes, setAnimeEpisodes] = useState([]); // For Anime (AnimePahe/Gogo)
+    const [animeEpisodes, setAnimeEpisodes] = useState([]); // For Anilist
     const [streamError, setStreamError] = useState(null);
     const [fullDetails, setFullDetails] = useState(item);
     const [loadingDetails, setLoadingDetails] = useState(false);
@@ -125,7 +125,7 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
                 setCurrentSeason(next.season);
                 setCurrentEpisode(next.episode);
             } else {
-                // Anime logic
+                // Anilist logic
                 setFullDetails(prev => ({ ...prev, episodeId: next.episodeId }));
                 setCurrentEpisode(next.episodeNo);
             }
@@ -168,24 +168,15 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
                         setSeasonsData(data.seasons);
                     }
                 } else {
-                    // Anime Source
-                    setLoadingDetails(true);
-                    try {
-                        let episodes = [];
-                        if (preloadedEpisodes && preloadedEpisodes.length > 0) {
-                            episodes = preloadedEpisodes;
-                        } else {
-                            const res = await fetch(`${API_BASE}/api/anime/episodes/${item.id}`);
-                            const data = await res.json();
-                            if (data.status === 200 && data.data && data.data.episodes) {
-                                episodes = data.data.episodes;
-                            }
+                    // Use preloaded episodes if provided (from App route loader)
+                    if (preloadedEpisodes && preloadedEpisodes.length > 0) {
+                        setAnimeEpisodes(preloadedEpisodes);
+                    } else {
+                        const res = await fetch(`${API_BASE}/api/anime/episodes/${item.id}`);
+                        const data = await res.json();
+                        if (data.status === 200 && data.data && data.data.episodes) {
+                            setAnimeEpisodes(data.data.episodes);
                         }
-                        setAnimeEpisodes(episodes);
-                        // Also sync fullDetails so header title is stable
-                        setFullDetails(prev => ({ ...prev, ...item, episodes: episodes }));
-                    } catch (e) {
-                         console.error("Anime details fetch failed", e);
                     }
                 }
             } catch (err) {
@@ -199,7 +190,7 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
 
     // Sync Episode ID when Episodes Load (Fix for Initial Load)
     useEffect(() => {
-        if (activeSource === 'animepahe' && animeEpisodes.length > 0 && !fullDetails.episodeId) {
+        if (activeSource === 'anilist' && animeEpisodes.length > 0 && !fullDetails.episodeId) {
             const ep = animeEpisodes.find(e => e.number === currentEpisode);
             if (ep) {
                 console.log("[WatchPage] Syncing Episode ID for Auto-Play:", ep.episodeId);
@@ -211,167 +202,138 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
 
     // Fetch Stream URL
     useEffect(() => {
-        const fetchStream = async () => {
-            setLoadingStream(true);
-            setStreamError(null);
+        const abortController = new AbortController();
+        const timeoutId = setTimeout(() => abortController.abort(), 20000); // 20s timeout
 
-            if (activeSource !== 'moviebox') {
-                setSubtitles([]);
-            }
-
+        const fetchStream = async (retryCount = 0) => {
             try {
-                // --- YOUTUBE UNIVERSAL RESOLVER ---
-                const streamUrlFromState = streamUrl; // Existing state
-                const finalUrl = (activeSource === 'tv' ? item.url : streamUrlFromState) || (item && item.url);
+                setLoadingStream(true);
+                setStreamError(null);
 
-                if (finalUrl && (finalUrl.includes('youtube.com') || finalUrl.includes('youtu.be') || finalUrl.includes('youtube-nocookie.com'))) {
-                    console.log('[WatchPage] Resolving YouTube URL:', finalUrl);
-                    try {
-                        const res = await fetch(`${API_BASE}/api/tv/resolve?url=${encodeURIComponent(finalUrl)}`);
-                        if (res.ok) {
-                            const data = await res.json();
-                            setStreamUrl(data.url);
-                            setStreamType(data.type);
-                            setLoadingStream(false);
-                            return;
-                        }
-                    } catch (e) {
-                        console.error('[WatchPage] YouTube resolution failed:', e);
-                    }
+                if (activeSource !== 'moviebox') {
+                    setSubtitles([]);
                 }
 
                 // --- TV CHANNELS ---
                 if (activeSource === 'tv') {
-                    if (!finalUrl) {
-                        setStreamError('No stream URL available for this channel.');
-                        setLoadingStream(false);
-                        return;
+                    if (item.stream_type === 'youtube_hls' && item.yt_id) {
+                        const resolveUrl = `${API_BASE}/api/tv/resolve-yt-v3/${encodeURIComponent(item.yt_id)}`;
+                        const res = await fetch(resolveUrl, { signal: abortController.signal });
+                        const data = await res.json();
+                        if (data.url) {
+                            // Proxy the YouTube URL through our backend to avoid CORS/IP issues
+                            const finalUrl = `${API_BASE}/api/proxy-stream?url=${encodeURIComponent(data.url)}`;
+                            setStreamUrl(finalUrl);
+                            setStreamType('hls');
+                            setLoadingStream(false);
+                            return;
+                        } else {
+                            console.warn("YouTube HLS resolution failed:", data.error);
+                            setStreamError(`YouTube conversion failed: ${data.error || 'Unknown Error'}. IFrame fallback is disabled.`);
+                            setLoadingStream(false);
+                            return;
+                        }
                     }
-                    setStreamUrl(finalUrl);
-                    setStreamType(item.stream_type || (finalUrl.includes('.m3u8') ? 'hls' : 'embed'));
+
+                    const streamUrl = item.url;
+                    if (!streamUrl) throw new Error('No stream URL available');
+                    setStreamUrl(streamUrl);
+                    setStreamType(item.stream_type || 'hls');
                     setLoadingStream(false);
                     return;
                 }
 
-                // --- ANIME SOURCE STRATEGY ---
-                if (activeSource === 'animepahe' || activeSource === 'gogoanime') {
-                    let epId = fullDetails.episodeId || item.id;
-                    if ((!epId || !String(epId).includes('ep=')) && animeEpisodes.length > 0) {
-                        const foundEp = animeEpisodes.find(e => e.number === currentEpisode);
-                        if (foundEp) epId = foundEp.episodeId;
+                // --- ANILIST MEGAPLAY ---
+                if (activeSource === 'anilist') {
+                    const epNum = currentEpisode || 1;
+                    const animeId = item.id;
+                    const sourcesUrl = `${API_BASE}/api/anime/sources?episode_id=${epNum}&anime_id=${animeId}&category=${animeLanguage}`;
+                    
+                    const res = await fetch(sourcesUrl, { signal: abortController.signal });
+                    const data = await res.json();
+                    const sourceObj = data.url ? data : (data.data?.sources?.[0] || null);
+                    
+                    if (sourceObj && sourceObj.url) {
+                        // Wrap in iframe-proxy: serves embed inside a local HTTP page so
+                        // JWPlayer sees a valid HTTP origin (not file://) in Electron
+                        const proxyUrl = `${API_BASE}/api/iframe-proxy?url=${encodeURIComponent(sourceObj.url)}`;
+                        setStreamUrl(proxyUrl);
+                        setStreamType('embed');
+                        setLoadingStream(false);
+                        return;
+                    } else {
+                        throw new Error("Anime stream not found");
                     }
-                    // Continue to standard fetch below
                 }
-                // --- OTHER SOURCES (MovieBox, Anicli, etc.) ---
+
+                // --- MOVIEBOX / FALLBACK ---
                 let url;
+                let method = 'GET';
                 if (activeSource === 'moviebox') {
+                    method = 'POST';
                     url = `${API_BASE}/api/stream?mode=url&query=${encodeURIComponent(item.title)}`;
                     if (item.id) url += `&id=${encodeURIComponent(item.id)}`;
                     if (item.type) url += `&content_type=${encodeURIComponent(item.type)}`;
                     if (item.type !== 'movie' && currentSeason && currentEpisode) {
                         url += `&season=${currentSeason}&episode=${currentEpisode}`;
                     }
-                } else if (activeSource === 'anicli') {
-                    let epId = fullDetails.episodeId || item.id;
-                    if (animeEpisodes.length > 0) {
-                        const foundEp = animeEpisodes.find(e => String(e.number) === String(currentEpisode));
-                        if (foundEp) epId = foundEp.id;
-                    }
-                    url = `${API_BASE}/api/anicli/stream?episode_id=${encodeURIComponent(epId)}`;
                 } else {
-                    let epId = fullDetails.episodeId || item.episodeId;
-                    if ((!epId || !String(epId).includes('ep=')) && animeEpisodes.length > 0) {
-                        const foundEp = animeEpisodes.find(e => e.number === currentEpisode);
-                        if (foundEp) epId = foundEp.episodeId;
-                    }
+                    const epId = fullDetails.episodeId || item.episodeId;
                     if (!epId) throw new Error("No episode ID found.");
                     url = `${API_BASE}/api/anime/sources?episode_id=${encodeURIComponent(epId)}&category=${animeLanguage}`;
                 }
 
-                const res = await fetch(url, { method: activeSource === 'moviebox' ? 'POST' : 'GET' });
+                const res = await fetch(url, { method, signal: abortController.signal });
                 if (!res.ok) throw new Error(`Server error: ${res.status}`);
                 const data = await res.json();
 
                 if (activeSource === 'moviebox') {
                     if (data.status === 'success' && data.url) {
                         let finalUrl = data.url;
-                        const isInternal = API_BASE ? (finalUrl.includes(API_BASE) || finalUrl.includes('127.0.0.1:8000') || finalUrl.includes('localhost:8000')) : finalUrl.includes(window.location.origin);
+                        const isInternal = API_BASE ? finalUrl.includes(API_BASE) : finalUrl.includes(window.location.origin);
                         if (finalUrl.startsWith('http') && !isInternal) {
-                            finalUrl = `${API_BASE}/api/proxy-stream?url=${encodeURIComponent(finalUrl)}&source=${encodeURIComponent(activeSource)}`;
+                            finalUrl = `${API_BASE}/api/proxy-stream?url=${encodeURIComponent(finalUrl)}`;
                         } else if (!finalUrl.startsWith('http')) {
                             finalUrl = `${API_BASE}${finalUrl}`;
                         }
                         setStreamUrl(finalUrl);
                         setStreamType('hls');
                         if (data.subtitles) {
-                            setSubtitles(data.subtitles.map(s => {
-                                let subUrl = s.url;
-                                if (subUrl.startsWith('http')) {
-                                    // Use proxy for external subtitles to handle SRT-to-VTT conversion
-                                    subUrl = `${API_BASE}/api/proxy-stream?url=${encodeURIComponent(subUrl)}&source=moviebox`;
-                                } else {
-                                    subUrl = `${API_BASE}${subUrl.startsWith('/') ? '' : '/'}${subUrl}`;
-                                }
-                                return { ...s, url: subUrl };
-                            }));
+                            setSubtitles(data.subtitles.map(s => ({
+                                ...s,
+                                url: s.url.startsWith('http') ? s.url : `${API_BASE}${s.url.startsWith('/') ? '' : '/'}${s.url}`
+                            })));
                         }
+                        setLoadingStream(false);
                     } else throw new Error(data.message || "Failed to get stream");
                 } else {
-                    // Anime API fallback
-                    let sourceList = null;
-                    let subtitleList = null;
-
-                    if (data.url) {
-                        setStreamUrl(data.url);
-                        setStreamType(data.type === 'embed' ? 'embed' : 'hls');
-                    } else {
-                        if (data.data && data.data.sources && data.data.sources.length > 0) {
-                            sourceList = data.data.sources;
-                            subtitleList = data.data.subtitles;
-                        } else if (data.sources && data.sources.length > 0) {
-                            sourceList = data.sources;
-                            subtitleList = data.subtitles;
-                        }
-
-                        if (sourceList) {
-                            const s = sourceList[0];
-                            let finalUrl = s.url;
-                            if (s.type !== 'embed') {
-                                const isInternal = API_BASE ? (finalUrl.includes(API_BASE) || finalUrl.includes('127.0.0.1:8000') || finalUrl.includes('localhost:8000')) : finalUrl.includes(window.location.origin);
-                                if (finalUrl.startsWith('http') && !isInternal) {
-                                    finalUrl = `${API_BASE}/api/proxy-stream?url=${encodeURIComponent(finalUrl)}&source=${encodeURIComponent(activeSource)}`;
-                                } else if (!finalUrl.startsWith('http')) {
-                                    finalUrl = `${API_BASE}${finalUrl}`;
-                                }
-                            }
-                            setStreamUrl(finalUrl);
-                            setStreamType(s.type === 'embed' ? 'embed' : 'hls');
-                            if (subtitleList) {
-                                setSubtitles(subtitleList.map(sub => {
-                                    let subUrl = sub.url || sub.file;
-                                    if (subUrl && subUrl.startsWith('http')) {
-                                        subUrl = `${API_BASE}/api/proxy-stream?url=${encodeURIComponent(subUrl)}&source=${encodeURIComponent(activeSource)}`;
-                                    }
-                                    return { ...sub, url: subUrl };
-                                }));
-                            }
-                        } else {
-                            throw new Error("Stream not found in response");
-                        }
-                    }
+                    if (data.url || (data.data && data.data.sources && data.data.sources.length > 0)) {
+                        const s = data.url ? data : data.data.sources[0];
+                        setStreamUrl(s.url);
+                        setStreamType(s.type === 'embed' ? 'embed' : 'hls');
+                        setLoadingStream(false);
+                    } else throw new Error("Stream not found");
                 }
             } catch (err) {
+                if (err.name === 'AbortError') return;
                 console.error("Stream Fetch Error:", err);
-                setStreamError(err.message);
-            } finally {
-                setLoadingStream(false);
+                if (retryCount < 1) {
+                    console.log("[WatchPage] Retrying...");
+                    setTimeout(() => fetchStream(retryCount + 1), 1000);
+                } else {
+                    setStreamError(err.message === 'signal is aborted' ? 'Request timed out' : err.message);
+                    setLoadingStream(false);
+                }
             }
         };
 
-        // Fetch immediately or with minimal delay to prevent rapid duplicate calls
-        const timer = setTimeout(fetchStream, 50);
-        return () => clearTimeout(timer);
-    }, [currentSeason, currentEpisode, activeSource, item.id, item.type, API_BASE, fullDetails.episodeId, animeLanguage, retryCounter]);
+        fetchStream();
+
+        return () => {
+            abortController.abort();
+            clearTimeout(timeoutId);
+        };
+    }, [currentSeason, currentEpisode, activeSource, item.id, item.type, API_BASE, fullDetails.episodeId, animeLanguage]);
 
     return (
         <div style={{ position: 'fixed', inset: 0, background: '#0a0a0f', zIndex: 200, display: 'flex', flexDirection: 'column', color: '#fff', fontFamily: "'Inter', sans-serif" }}>
@@ -381,9 +343,9 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
                         <span>←</span> Back
                     </button>
                     <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                        <span style={{ fontWeight: 'bold', fontSize: '1.2rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fullDetails.title || item.title}</span>
+                        <span style={{ fontWeight: 'bold', fontSize: '1.2rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</span>
                         <span style={{ fontSize: '1rem', color: '#6366f1', fontWeight: 'bold' }}>
-                            {isTVChannel ? '🔴 Live' : isMovieContent ? 'Movie' : (activeSource === 'animepahe' ? `Episode ${currentEpisode || 1}` : `S${currentSeason || 1} E${currentEpisode || 1}`)}
+                            {isTVChannel ? '🔴 Live' : isMovieContent ? 'Movie' : (activeSource === 'anilist' ? `Episode ${currentEpisode || 1}` : `S${currentSeason || 1} E${currentEpisode || 1}`)}
                         </span>
                     </div>
                 </div>
@@ -462,49 +424,11 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <h3 style={{ margin: 0, fontSize: '1.1rem' }}>Episodes</h3>
                                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                    {(activeSource === 'animepahe' || activeSource === 'gogoanime') && (
+                                    {activeSource === 'anilist' && (
                                         <div style={{ display: 'flex', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', padding: '4px' }}>
                                             <button onClick={() => setAnimeLanguage('sub')} style={{ padding: '4px 8px', border: 'none', borderRadius: '4px', cursor: 'pointer', background: animeLanguage === 'sub' ? '#6366f1' : 'transparent', color: 'white', fontSize: '0.7rem' }}>SUB</button>
                                             <button onClick={() => setAnimeLanguage('dub')} style={{ padding: '4px 8px', border: 'none', borderRadius: '4px', cursor: 'pointer', background: animeLanguage === 'dub' ? '#6366f1' : 'transparent', color: 'white', fontSize: '0.7rem' }}>DUB</button>
                                         </div>
-                                    )}
-                                    {streamUrl && (
-                                        <button 
-                                            title="Download Video"
-                                            onClick={() => {
-                                                let targetUrl = streamUrl;
-                                                // If already proxied, unwrap it to get the raw URL
-                                                if (targetUrl.includes('/api/proxy-stream?url=')) {
-                                                    const params = new URLSearchParams(targetUrl.split('?')[1]);
-                                                    targetUrl = params.get('url') || targetUrl;
-                                                }
-
-                                                /* HLS is now supported via backend ffmpeg merger */
-
-                                                const filename = `video_${Date.now()}.mp4`;
-                                                const proxyUrl = `${API_BASE}/api/proxy/download?url=${encodeURIComponent(targetUrl)}&filename=${encodeURIComponent(filename)}&source=${activeSource}`;
-                                                
-                                                const link = document.createElement('a');
-                                                link.href = proxyUrl;
-                                                link.download = filename;
-                                                document.body.appendChild(link);
-                                                link.click();
-                                                document.body.removeChild(link);
-                                            }}
-                                            style={{
-                                                background: 'rgba(255,255,255,0.05)',
-                                                border: 'none',
-                                                borderRadius: '8px',
-                                                padding: '8px',
-                                                cursor: 'pointer',
-                                                color: 'white',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center'
-                                            }}
-                                        >
-                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-                                        </button>
                                     )}
                                 </div>
                             </div>
@@ -553,7 +477,7 @@ const WatchPage = ({ item, initialSeason, initialEpisode, API_BASE, onBack, prel
 
                         </div>
                         <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(60px, 1fr))', gap: '8px' }}>
-                            {(activeSource === 'animepahe' || activeSource === 'gogoanime') ? (
+                            {activeSource === 'anilist' ? (
                                 animeEpisodes.map(ep => (
                                     <button
                                         key={ep.episodeId}

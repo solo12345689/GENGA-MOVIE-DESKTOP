@@ -10,105 +10,18 @@ import MusicCard from './components/MusicCard';
 import MusicPlayer from './components/MusicPlayer';
 import NewsCard from './components/NewsCard';
 import NewsReader from './components/NewsReader';
-import NovelReader from './components/NovelReader';
 import TVDiscovery from './components/TVDiscovery';
+import RadioDiscovery from './components/RadioDiscovery';
+import RadioPlayer from './components/RadioPlayer';
 import './styles/index.css';
 
-// Auto-detect local server IP
-const detectLocalServer = async (onProgress) => {
-    // For Electron Deskstop App, immediately return localhost:8000 to avoid scanning delays
-    if (navigator.userAgent.includes('Electron')) {
-        return 'http://localhost:8000';
-    }
 
-    // Check relative path first (for Cloudflare Tunnels / Proxy)
-    try {
-        const res = await fetch('/api/health');
-        if (res.ok) {
-            console.log('Found backend on relative path');
-            return ''; // Empty string for relative path
-        }
-    } catch (e) {
-        // Ignore
-    }
-
-    // Check specific IP and port
-    const checkIP = async (ip, port = 8000) => {
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 500); // 500ms timeout
-
-            // If checking localhost/IP, use http.
-            // If checking a domain (tunnel), we might need https, but here we scan local network so http is fine usually.
-            // But if 'ip' is actually a hostname, act smart.
-            let protocol = 'http';
-            if (window.location.protocol === 'https:' && ip !== 'localhost' && !ip.match(/^\d+\./)) {
-                protocol = 'https';
-            }
-
-            const response = await fetch(`${protocol}://${ip}:${port}/api/health`, {
-                method: 'GET',
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-            if (response.ok) {
-                return `http://${ip}:${port}`;
-            }
-        } catch (e) {
-            // Ignore errors
-        }
-        return null;
-    };
-
-    // 1. First check the current hostname on common ports (8000, 8080)
-    const hostname = window.location.hostname; // Define hostname here
-    if (onProgress) onProgress(`Checking ${hostname}...`);
-    const port8000 = await checkIP(hostname, 8000);
-    if (port8000) return port8000;
-
-    const port8080 = await checkIP(hostname, 8080);
-    if (port8080) return port8080;
-
-    // 2. Scan local network subnets (only check port 8000/8080 for discovery)
-    // We prioritize 8000 for scanning to be fast
-    const subnets = [
-        '192.168.0',
-        '192.168.1',
-        '192.168.31',
-        '192.168.100',
-        '10.0.0'
-    ];
-
-    for (const subnet of subnets) {
-        if (onProgress) onProgress(`Scanning ${subnet}.x...`);
-
-        // Scan 255 IPs in chunks of 20
-        const ips = Array.from({ length: 255 }, (_, i) => `${subnet}.${i + 1}`);
-        const chunkSize = 20;
-
-        for (let i = 0; i < ips.length; i += chunkSize) {
-            const chunk = ips.slice(i, i + chunkSize);
-            // Check port 8000 first, then 8080
-            const promises = chunk.flatMap(ip => [checkIP(ip, 8000), checkIP(ip, 8080)]);
-            const results = await Promise.all(promises);
-            const found = results.find(url => url);
-            if (found) {
-                // Silent found
-                return found;
-            }
-        }
-    }
-
-    // Fallback to localhost:8000 if nothing else found
-    // Or try localhost:8080 last resort
-    const local8080 = await checkIP('localhost', 8080);
-    if (local8080) return local8080;
-
-    return 'http://localhost:8000';
-};
 
 // Define available backends
+// Use localhost for all services as they are bundled locally
 const CLOUD_BASE = 'http://localhost:8000';
+const NEWS_API_BASE = 'http://localhost:8000';
+const LOCAL_BACKEND = 'http://localhost:8000';
 
 
 function App() {
@@ -120,14 +33,11 @@ function App() {
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const internalNavRef = React.useRef(false);
 
-    const [localServerURL, setLocalServerURL] = useState(() => {
-        const saved = localStorage.getItem('moviebox_local_ip');
-        return saved !== null ? saved : 'http://localhost:8000';
-    });
+    const [localServerURL, setLocalServerURL] = useState(LOCAL_BACKEND);
 
-    const [scanningStatus, setScanningStatus] = useState('');
+
+
     const [showHistoryModal, setShowHistoryModal] = useState(false);
-
     const [historyFilter, setHistoryFilter] = useState('all');
     const [historyItems, setHistoryItems] = useState(() => {
         try {
@@ -136,6 +46,7 @@ function App() {
             return [];
         }
     });
+    const [manualIPInput, setManualIPInput] = useState('');
     const [activeSource, setActiveSource] = useState(() => {
         // Default to 'home' which aggregates or shows default homepage
         return localStorage.getItem('moviebox_active_source') || 'home';
@@ -153,66 +64,15 @@ function App() {
 
     }, [activeSource]);
 
-    // Auto-detect local server on mount
+    // Server discovery removed as backend is always local
     useEffect(() => {
-        const isDesktop = navigator.userAgent.includes('Electron');
-        if (isDesktop) {
-            // Default to localhost first so the app loads immediately
-            setLocalServerURL('http://localhost:8000');
-            
-            // Try to discover real IP in background for Casting
-            fetch('http://127.0.0.1:8001/system/ip')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.ip && data.ip !== '127.0.0.1') {
-                        const url = `http://${data.ip}:8000`;
-                        setLocalServerURL(url);
-                        localStorage.setItem('moviebox_local_ip', url);
-                    }
-                })
-                .catch(() => { /* Silent fallback to localhost */ });
-            return;
-        }
-
-        // Only scan if we don't have a saved IP or if explicitly requested
-        const savedIP = localStorage.getItem('moviebox_local_ip');
-        // Force rescan if no IP, or if IP is using old stale ports (8000, 8001, 5500)
-        const isStale = savedIP && (savedIP.includes(':8001') || savedIP.includes(':5500'));
-
-        if (!savedIP || savedIP === 'http://localhost:8000' || isStale) {
-            // Only set scanning status if NOT in Electron to keep startup clean
-            setScanningStatus('Scanning network...');
-            detectLocalServer((status) => {
-                setScanningStatus(status);
-            }).then(url => {
-                setLocalServerURL(url);
-                setScanningStatus('');
-                if (url !== 'http://localhost:8000') {
-                    localStorage.setItem('moviebox_local_ip', url);
-                }
-            });
-        }
-        else {
-
-        }
+        setLocalServerURL(LOCAL_BACKEND);
     }, []);
 
     // Helper to determine target base URL for a given source
     const getTargetBase = (src = activeSource) => {
-        const isDesktop = navigator.userAgent.includes('Electron');
-        // Use the discovered real local IP (even on Desktop) so that Casting works.
-        // If the TV receives 'localhost', it won't be able to connect to the computer's backend.
-        if (localServerURL && localServerURL !== 'http://localhost:8000') {
-            return localServerURL;
-        }
-
-        if (isDesktop) {
-            return 'http://localhost:8000';
-        }
-
-        return (src === 'animepahe' || src === 'manga' || src === 'anicli' || src === 'music' || src === 'news')
-            ? CLOUD_BASE
-            : localServerURL;
+        if (src === 'news') return NEWS_API_BASE;
+        return LOCAL_BACKEND;
     };
 
     const API_BASE = getTargetBase(activeSource);
@@ -225,10 +85,25 @@ function App() {
     const [activeTrack, setActiveTrack] = useState(null); // For MusicPlayer
     const [detailsLoading, setDetailsLoading] = useState(false);
     const [newsReaderItem, setNewsReaderItem] = useState(null);
+    const [activeRadioStation, setActiveRadioStation] = useState(null);
     const [downloadProgress, setDownloadProgress] = useState(null);
     const [homepageContent, setHomepageContent] = useState(null);
     const [homepageLoading, setHomepageLoading] = useState(false);
-    const [novelReaderItem, setNovelReaderItem] = useState(null);
+    const [globalError, setGlobalError] = useState(null);
+
+    useEffect(() => {
+        const handleError = (event) => {
+            setGlobalError(event.error?.message || event.message || "Unknown Error");
+            console.error("Global Error:", event);
+        };
+        window.addEventListener('error', handleError);
+        window.addEventListener('unhandledrejection', (e) => {
+            setGlobalError(e.reason?.message || "Promise Rejection");
+        });
+        return () => {
+            window.removeEventListener('error', handleError);
+        };
+    }, []);
 
     // Server status (simple polling or just static 'operational' for now, can be updated by backend)
     const [serverStatus, setServerStatus] = useState('operational');
@@ -238,7 +113,7 @@ function App() {
         // Just a simple status check simulation
         setServerStatus('operational');
 
-        const fetchHomepage = async () => {
+        const fetchHomepage = async (retryCount = 0) => {
             if (API_BASE === null) return;
 
             // Don't fetch homepage if we are in 'cinecli' or search mode (unless implemented)
@@ -251,15 +126,16 @@ function App() {
             try {
                 // Determine endpoint based on source
                 let endpoint = '/api/homepage';
-                if (activeSource === 'animepahe') endpoint = '/api/anime/home';
-                if (activeSource === 'manga') endpoint = '/api/manga/search?query=popular';
-                if (activeSource === 'novel') endpoint = '/api/novel/search?query=trending';
+                if (activeSource === 'manga') endpoint = '/api/manga/search?query=Top';
+                if (activeSource === 'anilist') endpoint = '/api/anime/home';
                 if (activeSource === 'music') endpoint = '/api/music/home';
                 if (activeSource === 'news') {
-                    const newsRes = await fetch(`${API_BASE}/api/news/latest`);
+                    // Fetch directly from local Consumet service
+                    const newsRes = await fetch(`${API_BASE}/api/news/ann/recent-feeds`);
                     if (newsRes.ok) {
                         const newsData = await newsRes.json();
-                        setHomepageContent([{ title: 'Latest Anime & Manga News', items: newsData.results || [], type: 'news' }]);
+                        const items = Array.isArray(newsData) ? newsData : (newsData.results || newsData.items || []);
+                        setHomepageContent([{ title: 'Latest Anime & Manga News', items: items, type: 'news' }]);
                         setHomepageLoading(false);
                         return;
                     }
@@ -269,61 +145,46 @@ function App() {
                 if (res.ok) {
                     const data = await res.json();
                     if (activeSource === 'moviebox' || activeSource === 'home') {
-                        const groups = (data && data.groups) || [];
-                        setHomepageContent(groups.map(g => ({
+                        setHomepageContent(data.groups.map(g => ({
                             ...g,
-                            items: Array.isArray(g.items) ? g.items.map(it => ({ ...it, source: 'moviebox' })) : []
+                            items: g.items.map(it => ({ ...it, source: 'moviebox' }))
                         })));
-                    } else if (activeSource === 'animepahe') {
-                        const groups = Array.isArray(data) ? data : [];
-                        setHomepageContent(groups.map(g => ({
-                            ...g,
-                            items: Array.isArray(g.items) ? g.items.map(it => ({
-                                ...it,
-                                poster_url: it.poster_url && it.poster_url.startsWith('/') ? `${API_BASE}${it.poster_url}` : it.poster_url,
-                                poster: it.poster && it.poster.startsWith('/') ? `${API_BASE}${it.poster}` : it.poster
-                            })) : []
-                        })));
+                    } else if (activeSource === 'anilist') {
+                        setHomepageContent(data);
                     } else if (activeSource === 'manga') {
-                        const results = (data && data.results) || [];
+                        const results = Array.isArray(data) ? data : (data.results || []);
                         setHomepageContent([{
                             title: 'Popular Manga',
                             items: results.map(it => ({
                                 ...it,
                                 source: 'manga',
-                                poster_url: `${API_BASE}/api/manga/image-proxy?url=${encodeURIComponent(it.poster_url || '')}`
+                                poster_url: `${API_BASE}/api/manga/image-proxy?url=${encodeURIComponent(it.poster_url)}`
                             }))
                         }]);
-                    } else if (activeSource === 'novel') {
-                        setHomepageContent([{ title: 'Novel Library', items: [], _novelWelcome: true }]);
                     } else if (activeSource === 'tv') {
                         setHomepageContent([{ title: 'Live TV', items: [], _tvWelcome: true }]);
                     } else if (activeSource === 'music') {
-                        if (data && Array.isArray(data.groups)) {
-                            setHomepageContent(data.groups.map(g => ({
-                                ...g,
-                                items: Array.isArray(g.items) ? g.items : []
-                            })));
-                        } else {
-                            setHomepageContent([]);
-                        }
+                        if (data.groups) setHomepageContent(data.groups);
                     }
-                } else {
-                    // If server exists but returns error, don't set [] yet, let it retry
-                    console.warn(`Homepage fetch failed with status: ${res.status}`);
+                    setHomepageLoading(false);
+                } else if (retryCount < 4) {
+                    throw new Error(`HTTP ${res.status}`);
                 }
             } catch (err) {
-                // On initial load, if backend is still starting, we might get connection refused.
-                // Keep homepageContent as null so it retries via the useEffect dependency.
-                console.log("Waiting for backend...");
-            } finally {
+                if (retryCount < 4) {
+                    // Wait 2s and retry
+                    setTimeout(() => fetchHomepage(retryCount + 1), 2000);
+                    return;
+                }
+                setHomepageContent([]); // Clear homepage content on error after retries
                 setHomepageLoading(false);
             }
         };
 
+        // Added this simple check to prevent infinity loop if activeSource doesn't change
+        // Only fetch if homepageContent is null (when changing sources it's set to null)
         if (homepageContent === null) {
-            const timer = setTimeout(fetchHomepage, 1500); // Small delay to let states settle
-            return () => clearTimeout(timer);
+            fetchHomepage();
         }
 
     }, [API_BASE, activeSource, homepageContent]);
@@ -390,6 +251,7 @@ function App() {
 
         return () => {
             didUnmount = true;
+            if (reconnectTimeout) clearTimeout(reconnectTimeout);
             if (ws) {
                 ws.onclose = null;
                 ws.onerror = null;
@@ -398,10 +260,10 @@ function App() {
                 if (ws.readyState === WebSocket.OPEN) {
                     ws.close();
                 } else if (ws.readyState === WebSocket.CONNECTING) {
-                    // Nulled handlers ensure it dies quietly when it finishes opening
+                    // Force close if it's connecting
+                    ws.close();
                 }
             }
-            if (reconnectTimeout) clearTimeout(reconnectTimeout);
         };
     }, [API_BASE]); // Re-connect when API_BASE changes
 
@@ -418,7 +280,7 @@ function App() {
             let endpoint = `/api/search?query=${encodeURIComponent(query)}&content_type=${type}`;
             const base = getTargetBase(activeSource);
 
-            if (activeSource === 'animepahe') {
+            if (activeSource === 'anilist') {
                 endpoint = `/api/anime/search?query=${encodeURIComponent(query)}`;
             } else if (activeSource === 'cinecli') {
                 endpoint = `/api/cinecli/search?query=${encodeURIComponent(query)}`;
@@ -426,45 +288,32 @@ function App() {
                 endpoint = `/api/manga/search?query=${encodeURIComponent(query)}`;
             } else if (activeSource === 'music') { // Added music search logic
                 endpoint = `/api/music/search?query=${encodeURIComponent(query)}`;
-            } else if (activeSource === 'novel') {
-                endpoint = `/api/novel/search?query=${encodeURIComponent(query)}`;
             }
 
             const res = await fetch(`${base}${endpoint}`);
             const data = await res.json();
 
-            if (activeSource === 'animepahe') {
-                // Backend already normalizes anime results, but we need to ensure local API_BASE for relative proxy paths
-                const animeData = Array.isArray(data) ? data : (data?.results && Array.isArray(data.results) ? data.results : []);
-                setResults(animeData.map(it => ({
-                    ...it,
-                    poster_url: it.poster_url && it.poster_url.startsWith('/') ? `${base}${it.poster_url}` : it.poster_url,
-                    poster: it.poster && it.poster.startsWith('/') ? `${base}${it.poster}` : it.poster
-                })));
+            if (activeSource === 'anilist') {
+                // Backend already normalizes anime results
+                setResults(Array.isArray(data) ? data : []);
             } else if (activeSource === 'manga') {
-                const mangaResults = (data && Array.isArray(data.results)) ? data.results : (Array.isArray(data) ? data : []);
-                setResults(mangaResults.map(it => ({
+                setResults((data.results || []).map(it => ({
                     ...it,
                     source: 'manga',
-                    poster_url: `${base}/api/manga/image-proxy?url=${encodeURIComponent(it?.poster_url || '')}`
+                    poster_url: `${base}/api/manga/image-proxy?url=${encodeURIComponent(it.poster_url)}`
                 })));
-            } else if (activeSource === 'music' || activeSource === 'novel') { 
-                const otherResults = (data && Array.isArray(data.results)) ? data.results : (Array.isArray(data) ? data : []);
-                setResults(otherResults);
-            } else {
-                // MovieBox results: SubjectType 1=Movie, 2=Series
-                const movieResults = (data && Array.isArray(data.results)) ? data.results : [];
-                if (!Array.isArray(data.results) && data.error) {
-                    console.error("Backend returned search error:", data.error);
-                }
-                setResults(movieResults.map(it => {
-                    if (!it) return null;
+            } else if (activeSource === 'music') {
+                setResults((data.results || []).map(it => {
                     let determinedType = it.type;
                     if (typeof it.type !== 'string') {
                         determinedType = it.type === 2 ? 'series' : 'movie';
                     }
                     return { ...it, source: 'moviebox', type: determinedType };
-                }).filter(Boolean));
+                }));
+            } else {
+                // Default search results (Home / MovieBox)
+                const items = Array.isArray(data.results) ? data.results : (data.items || []);
+                setResults(items.map(it => ({ ...it, source: 'moviebox' })));
             }
         } catch (err) {
             console.error("Search failed", err);
@@ -495,14 +344,7 @@ function App() {
             }
 
             if (trackToPlay && trackToPlay.stream_url) {
-                // Ensure the stream_url is absolute if it's a proxied path
-                const playerBase = getTargetBase(item.source);
-                let finalUrl = trackToPlay.stream_url;
-                if (finalUrl.startsWith('/api/')) {
-                    finalUrl = `${playerBase}${finalUrl}`;
-                }
-                
-                setActiveTrack({ ...trackToPlay, stream_url: finalUrl });
+                setActiveTrack(trackToPlay);
                 setSelectedItem(null); // Close modal if open
             } else {
                 alert("Could not play this track. Stream URL missing.");
@@ -545,7 +387,7 @@ function App() {
         const isComplete = (it) => {
             if (!it || !it.hasFullDetails) return false;
             const s = it.source || src;
-            if (s === 'animepahe') return it.animeEpisodes && it.animeEpisodes.length > 0;
+            if (s === 'anilist') return it.animeEpisodes && it.animeEpisodes.length > 0;
             if (s === 'manga') return it.volumes && Object.keys(it.volumes).length > 0;
             if (s === 'novel') return it.volumes && Object.keys(it.volumes).length > 0;
             if (it.type === 'series' || it.type === 'anime') return it.seasons && it.seasons.length > 0;
@@ -580,7 +422,7 @@ function App() {
                 if (item.type === 'music_playlist' && data.tracks) track = data.tracks[0];
 
                 if (track && track.stream_url) {
-                    const proxyUrl = `${base}/api/proxy/download?url=${encodeURIComponent(track.stream_url)}&filename=${encodeURIComponent(track.title + (track.stream_url.includes('.m3u8') ? '.m3u8' : '.mp3'))}&source=music`;
+                    const proxyUrl = `${base}/api/proxy/download?url=${encodeURIComponent(track.stream_url)}&filename=${encodeURIComponent(track.title + (track.stream_url.includes('.m3u8') ? '.m3u8' : '.mp3'))}`;
                     window.location.href = proxyUrl;
                 }
             } catch (err) {
@@ -608,7 +450,7 @@ function App() {
 
             if (streamUrl) {
                 // 2. Redirect to Proxy Download
-                const proxyUrl = `${base}/api/proxy/download?url=${encodeURIComponent(streamUrl)}&filename=${encodeURIComponent(item.title + '.mp4')}&source=${item.source || activeSource}`;
+                const proxyUrl = `${base}/api/proxy/download?url=${encodeURIComponent(streamUrl)}&filename=${encodeURIComponent(item.title + '.mp4')}`;
                 window.location.href = proxyUrl;
             } else {
                 alert("Could not resolve a download link for this item.");
@@ -661,12 +503,12 @@ function App() {
         const preload = {
             item: { ...item, source: src },
             season: season || null,
-            episode: epValue || null,
+            episode: episode || null,
             animeEpisodes: item && item.animeEpisodes ? item.animeEpisodes : null
         };
         // Navigate to watch route with episode and source params
         const params = new URLSearchParams();
-        if (epValue !== null && epValue !== undefined) params.set('episode', String(epValue));
+        if (episode !== null && episode !== undefined) params.set('episode', String(episode));
         if (season !== null && season !== undefined) params.set('season', String(season));
         params.set('source', src);
 
@@ -675,6 +517,7 @@ function App() {
             if (item.url) params.set('url', item.url);
             if (item.stream_type) params.set('stream_type', item.stream_type);
             if (item.title) params.set('title', item.title);
+            if (item.yt_id) params.set('yt_id', item.yt_id);
         }
 
         internalNavRef.current = true;
@@ -701,265 +544,259 @@ function App() {
     };
 
     useEffect(() => {
-        // Keep UI in sync with React Router location
-        const pathname = location.pathname || '/';
-        const search = location.search || '';
+        try {
+            // Keep UI in sync with React Router location
+            const pathname = location.pathname || '/';
+            const search = location.search || '';
 
-        const loadDetails = async (id, source, type = 'movie') => {
-            // TV channels don't have a details page — just clear state
-            if (source === 'tv') {
-                setDetailsLoading(false);
-                return;
-            }
-            // If loadDetails is called, it means we definitely need to fetch more data.
-            // We set detailsLoading(true) to show the prominent spinner.
-            setDetailsLoading(true);
+            const loadDetails = async (id, source, type = 'movie') => {
+                // TV channels don't have a details page — just clear state
+                if (source === 'tv') {
+                    setDetailsLoading(false);
+                    return;
+                }
+                // If loadDetails is called, it means we definitely need to fetch more data.
+                // We set detailsLoading(true) to show the prominent spinner.
+                setDetailsLoading(true);
 
-            // Determine appropriate base URL for this source
-            const base = getTargetBase(source);
+                console.log(`[App] loadDetails starting for ID: ${id}, Source: ${source}`);
+                // Determine appropriate base URL for this source
+                const base = getTargetBase(source);
+                console.log(`[App] Using base URL for fetch: ${base}`);
 
-            try {
-                if (source === 'cinecli') {
-                    const res = await fetch(`${base}/api/cinecli/details/${id}`);
-                    const details = await res.json();
-                    setSelectedItem(prev => ({ ...prev, ...details, source: 'cinecli', hasFullDetails: true }));
-                } else if (source === 'anicli') {
-                    const res = await fetch(`${base}/api/anicli/details/${id}`);
-                    const details = await res.json();
-                    setSelectedItem(prev => ({ ...prev, ...details, source: 'anicli', type: 'anime', hasFullDetails: true }));
-                } else if (source === 'animepahe') {
-                    let details = {};
-                    let episodes = [];
-                    try {
-                        const dTask = fetch(`${base}/api/anime/details/${id}`).then(r => r.ok ? r.json() : {});
-                        const eTask = fetch(`${base}/api/anime/episodes/${id}`).then(r => r.ok ? r.json() : {});
-                        const [d, e] = await Promise.all([dTask, eTask]);
-                        details = d;
-                        if (e.status === 200 && e.data) episodes = e.data.episodes || [];
-                    } catch (e) { /* ignore */ }
+                try {
+                    if (source === 'cinecli') {
+                        const res = await fetch(`${base}/api/cinecli/details/${id}`);
+                        const details = await res.json();
+                        setSelectedItem(prev => ({ ...(prev || {}), ...details, source: 'cinecli', hasFullDetails: true }));
+                    } else if (source === 'anilist') {
+                        let details = {};
+                        let episodes = [];
+                        try {
+                            const dTask = fetch(`${base}/api/anime/details/${id}`).then(r => r.ok ? r.json() : {});
+                            const eTask = fetch(`${base}/api/anime/episodes/${id}`).then(r => r.ok ? r.json() : {});
+                            const [d, e] = await Promise.all([dTask, eTask]);
+                            details = d;
+                            if (e.status === 200 && e.data) episodes = e.data.episodes || [];
+                        } catch (e) { /* ignore */ }
 
-                    setSelectedItem(prev => ({
-                        ...prev,
-                        ...(details.id ? details : { id, title: details.title || (prev && prev.title) || '' }),
-                        animeEpisodes: episodes,
-                        type: 'anime',
-                        source: 'animepahe',
-                        hasFullDetails: true
-                    }));
-                } else if (source === 'manga') {
-                    const res = await fetch(`${base}/api/manga/details/${id}`);
-                    const details = await res.json();
-                    setSelectedItem(prev => {
-                        const rawPoster = details.poster_url || details.poster || details.image;
-                        let finalPoster = prev?.poster_url || null;
+                        setSelectedItem(prev => ({
+                            ...(prev || {}),
+                            ...(details.id ? details : { id, title: details.title || (prev && prev.title) || '' }),
+                            animeEpisodes: episodes,
+                            type: 'anime',
+                            source: 'anilist',
+                            hasFullDetails: true
+                        }));
+                    } else if (source === 'manga') {
+                        const res = await fetch(`${base}/api/manga/details/${id}`);
+                        const details = await res.json();
+                        setSelectedItem(prev => {
+                            const rawPoster = details.poster_url || details.poster || details.image;
+                            let finalPoster = prev?.poster_url || null;
 
-                        if (rawPoster && typeof rawPoster === 'string') {
-                            if (rawPoster.includes('/api/manga/image-proxy')) {
-                                finalPoster = rawPoster;
-                            } else if (rawPoster.startsWith('http') || rawPoster.startsWith('//')) {
-                                const fullUrl = rawPoster.startsWith('//') ? `https:${rawPoster}` : rawPoster;
-                                finalPoster = `${base}/api/manga/image-proxy?url=${encodeURIComponent(fullUrl)}`;
-                            } else {
-                                finalPoster = rawPoster;
+                            if (rawPoster && typeof rawPoster === 'string') {
+                                if (rawPoster.includes('/api/manga/image-proxy')) {
+                                    finalPoster = rawPoster;
+                                } else if (rawPoster.startsWith('http') || rawPoster.startsWith('//')) {
+                                    const fullUrl = rawPoster.startsWith('//') ? `https:${rawPoster}` : rawPoster;
+                                    finalPoster = `${base}/api/manga/image-proxy?url=${encodeURIComponent(fullUrl)}`;
+                                } else {
+                                    finalPoster = rawPoster;
+                                }
                             }
-                        }
 
-                        return {
+                            return {
+                                ...(prev || {}),
+                                ...details,
+                                source: 'manga',
+                                type: 'manga',
+                                poster_url: finalPoster || prev?.poster_url,
+                                hasFullDetails: true
+                            };
+                        });
+                    } else if (source === 'music') {
+                        const res = await fetch(`${base}/api/music/info?seokey=${id}&type=${type}`);
+                        const details = await res.json();
+                        setSelectedItem(prev => ({
                             ...(prev || {}),
                             ...details,
-                            source: 'manga',
-                            type: 'manga',
-                            poster_url: finalPoster || prev?.poster_url,
+                            source: 'music',
+                            type: type || 'music',
                             hasFullDetails: true
-                        };
-                    });
-                } else if (source === 'novel') {
-                    // ID might be encoded URL here, but fetch() handles URL-as-id if backend supports it
-                    // The backend handles id.startswith("http") -> treats it as URL
-                    const res = await fetch(`${base}/api/novel/info?id=${encodeURIComponent(id)}`);
-                    const details = await res.json();
-                    setSelectedItem(prev => ({
-                        ...prev,
-                        ...details,
-                        source: 'novel',
-                        type: 'novel',
-                        hasFullDetails: true
-                    }));
-                } else if (source === 'music') {
-                    const res = await fetch(`${base}/api/music/info?seokey=${id}&type=${type}`);
-                    const details = await res.json();
-                    setSelectedItem(prev => ({
-                        ...prev,
-                        ...details,
-                        source: 'music',
-                        type: type || 'music',
-                        hasFullDetails: true
-                    }));
-                } else {
-                    const res = await fetch(`${base}/api/details/${id}?type=${type}`);
-                    const details = await res.json();
-                    setSelectedItem(prev => ({ ...prev, ...details, source: 'moviebox', hasFullDetails: true }));
+                        }));
+                    } else {
+                        const res = await fetch(`${base}/api/details/${id}?type=${type}`);
+                        const details = await res.json();
+                        setSelectedItem(prev => ({ ...(prev || {}), ...details, source: 'moviebox', hasFullDetails: true }));
+                    }
+                } catch (e) {
+                    console.error('Failed to load details for route', e);
+                } finally {
+                    setDetailsLoading(false);
                 }
-            } catch (e) {
-                console.error('Failed to load details for route', e);
-            } finally {
-                setDetailsLoading(false);
-            }
-        };
-
-        const loadWatch = async (id, ep, source = 'moviebox', season = null) => {
-            console.log("[App] loadWatch triggered for:", id, "Source:", source);
-            try {
-                let details = { id, source }; // Default with known info
-                if (source === 'animepahe') {
-                    // Anime: fetch details and episodes then set player to use embed flow
-                    const base = getTargetBase(source);
-                    try {
-                        const dRes = await fetch(`${base}/api/anime/details/${id}`);
-                        if (dRes.ok) details = await dRes.json();
-                    } catch (e) { /* ignore */ }
-
-                    let episodes = [];
-                    try {
-                        const eRes = await fetch(`${base}/api/anime/episodes/${id}`);
-                        const eData = await eRes.json();
-                        if (eData.status === 200 && eData.data) episodes = eData.data.episodes || [];
-                    } catch (e) { /* ignore */ }
-
-                    // Provide enough info for WatchPage to construct embed URL / episodeId mapping
-                    const item = { ...details, id, source: 'animepahe', type: 'anime', hasFullDetails: true };
-                    setVideoPlayerData({ item, season: season || null, episode: ep || null, animeEpisodes: episodes });
-                    setSelectedItem(null);
-                    return;
-                }
-
-                // TV channels: no details endpoint, just play directly
-                if (source === 'tv') {
-                    const params = new URLSearchParams(location.search);
-                    const url = params.get('url');
-                    const streamType = params.get('stream_type') || 'hls';
-                    // Decode title — it was encoded with encodeURIComponent
-                    const rawTitle = params.get('title') || '';
-                    const title = rawTitle || id;
-                    // console.log("[App] loadWatch TV data reconstructed:", { id, url, title });
-                    setVideoPlayerData({ item: { id, source: 'tv', type: 'channel', url, stream_type: streamType, title }, season: null, episode: null });
-                    setSelectedItem(null);
-                    return;
-                }
-
-                // Default MovieBox flow
-                const base = getTargetBase(source);
-                const res = await fetch(`${base}/api/details/${id}`);
-                if (res.ok) {
-                    const d = await res.json();
-                    const item = { ...d, id, source, type: (d.type || (source === 'anicli' ? 'anime' : 'movie')), hasFullDetails: true };
-                    setVideoPlayerData({ item, season: season || null, episode: ep || null });
-                    setSelectedItem(null);
-                } else {
-                    setVideoPlayerData({ item: { id, source, type: (source === 'anicli' ? 'anime' : 'movie') }, season: season || null, episode: ep || null });
-                }
-            } catch (e) {
-                setVideoPlayerData({ item: { id, source, type: (source === 'anicli' ? 'anime' : 'movie') }, season: season || null, episode: ep || null });
-            }
-        };
-
-        // Route handling
-        // console.log("[App] Route Sync Hook triggered. Path:", pathname, "Params:", search);
-
-        // Group route handlers to avoid clearing state during transitions
-        if (pathname.startsWith('/details/')) {
-            // Guard: If we are navigating TOWARDS a player/reader, don't clear state or reload details.
-            if (internalNavRef.current) {
-                internalNavRef.current = false; // Reset now that we are at the route 
-                return;
-            }
-
-            const rawId = pathname.replace('/details/', '').split('?')[0];
-            const id = decodeURIComponent(rawId);
-            const params = new URLSearchParams(search);
-            const source = params.get('source') || 'moviebox';
-            const type = params.get('type') || 'movie';
-
-            // Sync activeSource state if it differs from the URL (handles deep-linking)
-            if (source !== activeSource && source !== 'home' && activeSource !== 'history') {
-                setActiveSource(source);
-            }
-
-            let effectiveItem = selectedItem;
-
-            // First check if it's already in active state (e.g. from Reader/Player)
-            if (videoPlayerData && String(videoPlayerData.item.id) === String(id)) {
-                setSelectedItem(null); // Ensure modal is closed when watching/reading
-                effectiveItem = videoPlayerData.item;
-            } else if (mangaReaderItem && String(mangaReaderItem.item.id) === String(id)) {
-                setSelectedItem(mangaReaderItem.item);
-                effectiveItem = mangaReaderItem.item;
-            }
-
-            // Ensure other main views are cleared when viewing details
-            setVideoPlayerData(null);
-            setMangaReaderItem(null);
-            setNovelReaderItem(null);
-            setNewsReaderItem(null);
-
-            // Determine if the item is "full enough" for the requested ID
-            const isFullItem = (it) => {
-                if (!it || String(it.id) !== String(id)) return false;
-                if (!it.hasFullDetails) return false;
-
-                // Source-specific checks
-                if (source === 'animepahe') return it.animeEpisodes && it.animeEpisodes.length > 0;
-                if (source === 'manga') return it.volumes && Object.keys(it.volumes).length > 0;
-                if (source === 'music') return (it.tracks && it.tracks.length > 0) || (it.songs && it.songs.length > 0);
-                if (it.type === 'series' || it.type === 'anime') return it.seasons && it.seasons.length > 0;
-
-                return !!(it.plot || it.description);
             };
 
-            if (!isFullItem(effectiveItem)) {
-                loadDetails(id, source, type);
-            }
-            return;
-        }
+            const loadWatch = async (id, ep, source = 'moviebox', season = null) => {
+                console.log("[App] loadWatch triggered for:", id, "Source:", source);
+                try {
+                    let details = { id, source }; // Default with known info
+                    if (source === 'anilist') {
+                        // HiAnime: fetch details and episodes then set player to use embed flow
+                        const base = getTargetBase(source);
+                        try {
+                            const dRes = await fetch(`${base}/api/anime/details/${id}`);
+                            if (dRes.ok) details = await dRes.json();
+                        } catch (e) { /* ignore */ }
 
-        if (pathname.startsWith('/watch/')) {
-            internalNavRef.current = false; // Destination reached
-            const id = pathname.replace('/watch/', '').split('/')[0];
-            const params = new URLSearchParams(search);
-            const ep = params.get('episode');
-            const season = params.get('season');
-            const source = params.get('source') || 'moviebox';
+                        let episodes = [];
+                        try {
+                            const eRes = await fetch(`${base}/api/anime/episodes/${id}`);
+                            const eData = await eRes.json();
+                            if (eData.status === 200 && eData.data) episodes = eData.data.episodes || [];
+                        } catch (e) { /* ignore */ }
 
-            if (source !== activeSource && source !== 'home' && activeSource !== 'history') {
-                setActiveSource(source);
-            }
+                        // Provide enough info for WatchPage to construct embed URL / episodeId mapping
+                        const item = { ...details, id, source: 'anilist', type: 'anime', hasFullDetails: true };
+                        setVideoPlayerData({ item, season: season || null, episode: ep || null, animeEpisodes: episodes });
+                        setSelectedItem(null);
+                        return;
+                    }
 
-            const shouldReload = !videoPlayerData ||
-                String(videoPlayerData.item.id) !== String(id) ||
-                String(videoPlayerData.episode) !== String(ep);
+                    // TV channels: no details endpoint, just play directly
+                    if (source === 'tv') {
+                        const params = new URLSearchParams(location.search);
+                        const url = params.get('url');
+                        const ytId = params.get('yt_id');
+                        const streamType = params.get('stream_type') || 'hls';
+                        // Decode title — it was encoded with encodeURIComponent
+                        const rawTitle = params.get('title') || '';
+                        const title = rawTitle || id;
+                        // console.log("[App] loadWatch TV data reconstructed:", { id, url, title, ytId });
+                        setVideoPlayerData({
+                            item: { id, source: 'tv', type: 'channel', url, stream_type: streamType, title, yt_id: ytId },
+                            season: null,
+                            episode: null
+                        });
+                        setSelectedItem(null);
+                        return;
+                    }
 
-            setSelectedItem(null);
-            if (shouldReload) {
-                loadWatch(id, ep, source, season);
-            }
-            return;
-        }
+                    // Default MovieBox flow
+                    const base = getTargetBase(source);
+                    const res = await fetch(`${base}/api/details/${id}`);
+                    if (res.ok) {
+                        const d = await res.json();
+                        const item = { ...d, id, source, type: (d.type || 'movie'), hasFullDetails: true };
+                        setVideoPlayerData({ item, season: season || null, episode: ep || null });
+                        setSelectedItem(null);
+                    } else {
+                        setVideoPlayerData({ item: { id, source, type: 'movie' }, season: season || null, episode: ep || null });
+                    }
+                } catch (e) {
+                    setVideoPlayerData({ item: { id, source, type: 'movie' }, season: season || null, episode: ep || null });
+                }
+            };
 
-        // Fallback for Home/Root
-        if (pathname === '/' || pathname === '' || pathname === '/home') {
-            if (internalNavRef.current) {
-                internalNavRef.current = false;
+            // Route handling
+            // console.log("[App] Route Sync Hook triggered. Path:", pathname, "Params:", search);
+
+            // Group route handlers to avoid clearing state during transitions
+            if (pathname.startsWith('/details/')) {
+                // Guard: If we are navigating TOWARDS a player/reader, don't clear state or reload details.
+                if (internalNavRef.current) {
+                    internalNavRef.current = false; // Reset now that we are at the route 
+                    return;
+                }
+
+                const rawId = pathname.replace('/details/', '').split('?')[0];
+                const id = decodeURIComponent(rawId);
+                const params = new URLSearchParams(search);
+                const source = params.get('source') || 'moviebox';
+                const type = params.get('type') || 'movie';
+
+                // Sync activeSource state if it differs from the URL (handles deep-linking)
+                if (source !== activeSource && source !== 'home' && activeSource !== 'history') {
+                    setActiveSource(source);
+                }
+
+                let effectiveItem = selectedItem;
+
+                // First check if it's already in active state (e.g. from Reader/Player)
+                if (videoPlayerData && String(videoPlayerData.item.id) === String(id)) {
+                    setSelectedItem(null); // Ensure modal is closed when watching/reading
+                    effectiveItem = videoPlayerData.item;
+                } else if (mangaReaderItem && String(mangaReaderItem.item.id) === String(id)) {
+                    setSelectedItem(mangaReaderItem.item);
+                    effectiveItem = mangaReaderItem.item;
+                }
+
+                // Ensure other main views are cleared when viewing details
+                setVideoPlayerData(null);
+                setMangaReaderItem(null);
+                setNewsReaderItem(null);
+
+                // Determine if the item is "full enough" for the requested ID
+                const isFullItem = (it) => {
+                    if (!it || String(it.id) !== String(id)) return false;
+                    if (!it.hasFullDetails) return false;
+
+                    // Source-specific checks
+                    if (source === 'anilist') return it.animeEpisodes && it.animeEpisodes.length > 0;
+                    if (source === 'manga') return it.volumes && Object.keys(it.volumes || {}).length > 0;
+                    if (source === 'music') return (it.tracks?.length > 0) || (it.songs?.length > 0);
+                    if (it.type === 'series' || it.type === 'anime') return it.seasons && it.seasons.length > 0;
+
+                    return !!(it.plot || it.description);
+                };
+
+                if (!isFullItem(effectiveItem)) {
+                    loadDetails(id, source, type);
+                }
                 return;
             }
-            setSelectedItem(null);
-            setVideoPlayerData(null);
-            setMangaReaderItem(null);
-            setNewsReaderItem(null);
-            return;
-        }
 
-        // Reset guard if we are on any other route
-        internalNavRef.current = false;
+            if (pathname.startsWith('/watch/')) {
+                internalNavRef.current = false; // Destination reached
+                const id = pathname.replace('/watch/', '').split('/')[0];
+                const params = new URLSearchParams(search);
+                const ep = params.get('episode');
+                const season = params.get('season');
+                const source = params.get('source') || 'moviebox';
+
+                if (source !== activeSource && source !== 'home' && activeSource !== 'history') {
+                    setActiveSource(source);
+                }
+
+                const shouldReload = !videoPlayerData ||
+                    String(videoPlayerData.item.id) !== String(id) ||
+                    String(videoPlayerData.episode) !== String(ep);
+
+                setSelectedItem(null);
+                if (shouldReload) {
+                    loadWatch(id, ep, source, season);
+                }
+                return;
+            }
+
+            // Fallback for Home/Root
+            if (pathname === '/' || pathname === '' || pathname === '/home') {
+                if (internalNavRef.current) {
+                    internalNavRef.current = false;
+                    return;
+                }
+                setSelectedItem(null);
+                setVideoPlayerData(null);
+                setMangaReaderItem(null);
+                setNewsReaderItem(null);
+                return;
+            }
+
+            // Reset guard if we are on any other route
+            internalNavRef.current = false;
+        } catch (err) {
+            console.error("[App] Routing effect crashed:", err);
+        }
     }, [location, API_BASE]);
 
     return (
@@ -979,14 +816,18 @@ function App() {
 
                 {/* Header Controls */}
                 <div style={{
+                    position: 'absolute',
+                    top: '1rem',
+                    right: '2rem',
                     display: 'flex',
-                    justifyContent: 'flex-end',
                     gap: '1rem',
                     alignItems: 'center',
-                    padding: '1rem 2rem',
-                    width: '100%',
-                    zIndex: 10
+                    zIndex: 200, // Higher than search bar
+                    pointerEvents: 'none' // Let clicks pass through empty space
                 }}>
+
+
+
 
 
                 </div>
@@ -994,56 +835,81 @@ function App() {
 
                 <main className="container" style={{ paddingTop: '1rem' }}>
 
-                    {/* Source Title Helper */}
-                    <div style={{ marginBottom: '1rem', marginLeft: '0.5rem', opacity: 0.6, fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                        {activeSource === 'home' ? 'Discover' :
-                            activeSource === 'moviebox' ? 'Library' :
-                                activeSource === 'animepahe' ? 'Anime World' :
-                                    activeSource === 'manga' ? 'Manga Collection' :
-                                        activeSource === 'music' ? 'Music Library' :
-                                            activeSource === 'news' ? 'News Feed' :
-                                                activeSource === 'novel' ? 'Novel Library' :
-                                                    activeSource === 'history' ? 'Watch History' : 'Genga Movies'}
-
-                    </div>
-
-                    {/* Top Bar with Search */}
-                    {activeSource !== 'history' && activeSource !== 'news' && activeSource !== 'tv' && (
-                        <div style={{
-                            marginBottom: '2rem',
-                            display: 'flex',
-                            gap: '12px',
-                            alignItems: 'center',
-                            position: 'sticky',
-                            top: '1rem',
-                            zIndex: 10,
-                            padding: '0.5rem',
-                            background: 'rgba(var(--bg-card-rgb), 0.6)',
-                            backdropFilter: 'blur(12px)',
-                            borderRadius: '20px',
-                            border: '1px solid var(--border-glass)',
-                            width: '100%',
-                            maxWidth: '1200px',
-                            margin: '0 auto 2rem'
-                        }}>
-                            <SearchBar
-                                onSearch={handleSearch}
-                                placeholder={
-                                    activeSource === 'music' ? 'Search music or playlists...' :
-                                        activeSource === 'manga' ? "Search manga..." :
-                                            activeSource === 'novel' ? "Search novels..." :
-                                                activeSource === 'animepahe' ? "Search anime..." :
-                                                    'Search for movies or series...'}
-
-                            />
+                    {/* PRO-AESTHETIC HERO HEADER */}
+                    <div style={{
+                        position: 'relative',
+                        padding: '3rem 2rem',
+                        marginBottom: '3rem',
+                        borderRadius: 'var(--radius-lg)',
+                        background: 'linear-gradient(225deg, rgba(99, 102, 241, 0.1) 0%, rgba(6, 182, 212, 0.05) 100%)',
+                        border: '1px solid var(--border-glass)',
+                        overflow: 'hidden',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        textAlign: 'center',
+                        animation: 'fadeIn 0.8s var(--ease-out)'
+                    }}>
+                        {/* Decorative Blur Spheres */}
+                        <div style={{ position: 'absolute', top: '-50px', right: '-50px', width: '200px', height: '200px', background: 'var(--primary-glow)', filter: 'blur(80px)', opacity: 0.4, borderRadius: '50%' }}></div>
+                        <div style={{ position: 'absolute', bottom: '-20px', left: '-20px', width: '150px', height: '150px', background: 'var(--accent-glow)', filter: 'blur(60px)', opacity: 0.3, borderRadius: '50%' }}></div>
+                        
+                        <div style={{ position: 'relative', zIndex: 1 }}>
+                            <div style={{ 
+                                color: 'var(--accent-cyan)', 
+                                fontSize: '0.8rem', 
+                                fontWeight: '900', 
+                                letterSpacing: '4px', 
+                                textTransform: 'uppercase', 
+                                marginBottom: '1rem',
+                                opacity: 0.9
+                            }}>
+                                {activeSource === 'home' ? 'Recommended for you' :
+                                 activeSource === 'moviebox' ? 'Cinematic Library' :
+                                 activeSource === 'anilist' ? 'Anime Portal' :
+                                 activeSource === 'manga' ? 'Manga Sanctuary' :
+                                 activeSource === 'music' ? 'Sonic Waves' :
+                                 activeSource === 'news' ? 'Global Pulse' :
+                                 activeSource === 'tv' ? 'Broadcast Live' :
+                                 activeSource === 'history' ? 'Revisit the Past' : 'Genga Movies'}
+                            </div>
+                            <h1 style={{ 
+                                fontSize: '4rem', 
+                                marginBottom: '1.5rem',
+                                background: 'linear-gradient(to bottom right, #fff, #94a3b8)',
+                                WebkitBackgroundClip: 'text',
+                                WebkitTextFillColor: 'transparent',
+                                letterSpacing: '-2px'
+                            }}>
+                                {activeSource === 'home' ? 'Unlimited Entertainment.' :
+                                 activeSource === 'moviebox' ? 'Explore Movies & Series' :
+                                 activeSource === 'anilist' ? 'Dive into Anime' :
+                                 activeSource === 'manga' ? 'Read Best Manga' :
+                                 activeSource === 'music' ? 'Your Personal Soundtrack' :
+                                 activeSource === 'news' ? 'Latest Global News' :
+                                 activeSource === 'tv' ? 'Stream Channels' :
+                                 activeSource === 'history' ? 'Your Watch History' : 'Welcome to Genga'}
+                            </h1>
+                            
+                            {/* SEARCH INTEGRATION INSIDE HERO */}
+                            {activeSource !== 'history' && activeSource !== 'tv' && activeSource !== 'radio' && activeSource !== 'news' && (
+                                <SearchBar
+                                    onSearch={handleSearch}
+                                    placeholder={
+                                        activeSource === 'music' ? 'Search tracks or playlists...' :
+                                        activeSource === 'manga' ? "Search manga titles..." :
+                                        activeSource === 'anilist' ? "Search anime titles..." :
+                                        'What do you want to watch today?'}
+                                />
+                            )}
                         </div>
-                    )}
+                    </div>
 
                     {activeSource === 'history' && (
                         <div style={{ padding: '1rem 0' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
                                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                    {['all', 'moviebox', 'animepahe', 'manga', 'music'].map(f => (
+                                    {['all', 'moviebox', 'anilist', 'manga', 'music'].map(f => (
                                         <button
                                             key={f}
                                             onClick={() => setHistoryFilter(f)}
@@ -1059,7 +925,7 @@ function App() {
                                                 transition: 'all 0.2s'
                                             }}
                                         >
-                                            {f === 'animepahe' ? 'Anime' : f}
+                                            {f === 'anilist' ? 'Anime' : f}
                                         </button>
                                     ))}
                                 </div>
@@ -1160,9 +1026,17 @@ function App() {
                         ))}
                     </div>
 
-                    {results.length === 0 && !loading && activeSource !== 'history' && (
+                    {activeSource === 'tv' && results.length === 0 && (
+                        <TVDiscovery API_BASE={API_BASE} onStream={handleStream} />
+                    )}
+
+                    {activeSource === 'radio' && results.length === 0 && (
+                        <RadioDiscovery API_BASE={API_BASE} onStream={(station) => setActiveRadioStation(station)} />
+                    )}
+
+                    {results.length === 0 && !loading && activeSource !== 'history' && activeSource !== 'tv' && activeSource !== 'radio' && (
                         <>
-                            {(homepageLoading || homepageContent === null) ? (
+                            {homepageLoading ? (
                                 <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
                                     <div className="spinner" style={{
                                         width: '30px', height: '30px',
@@ -1178,52 +1052,38 @@ function App() {
                                 <div style={{ paddingBottom: '4rem' }}>
                                     {homepageContent.map((group, index) => (
                                         group._tvWelcome ? (
-                                            <TVDiscovery key={index} apiBase={API_BASE} onStream={handleStream} />
-                                        ) : group._novelWelcome ? (
-                                            /* Novel Welcome Screen */
-                                            <div key={index} style={{ textAlign: 'center', padding: '4rem 2rem', maxWidth: '600px', margin: '0 auto' }}>
-                                                <div style={{ fontSize: '4rem', marginBottom: '1.5rem' }}>📚</div>
-                                                <h2 style={{ fontSize: '2rem', fontWeight: '700', marginBottom: '1rem', background: 'linear-gradient(135deg, var(--primary), #a855f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                                                    Novel Library
-                                                </h2>
-                                                <p style={{ fontSize: '1.1rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: '1.6' }}>
-                                                    Search for any novel by name using our DuckDuckGo-powered search engine.
-                                                </p>
-                                                <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', opacity: 0.7, lineHeight: '1.6' }}>
-                                                    Supports RoyalRoad, ScribbleHub, NovelFull, and hundreds more sources.
-                                                    Once you open a novel, you can read its chapters directly in the browser.
-                                                </p>
-                                                <div style={{ marginTop: '2rem', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-                                                    {['Shadow Slave', 'Mother of Learning', 'Solo Leveling', 'Overlord'].map(s => (
-                                                        <button key={s} onClick={() => handleSearch(s)}
-                                                            style={{ padding: '0.5rem 1.2rem', borderRadius: '20px', border: '1px solid var(--border-glass)', background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.85rem', transition: 'all 0.2s' }}
-                                                            onMouseEnter={e => { e.target.style.background = 'var(--primary)'; e.target.style.color = '#fff'; }}
-                                                            onMouseLeave={e => { e.target.style.background = 'rgba(255,255,255,0.05)'; e.target.style.color = 'var(--text-muted)'; }}
-                                                        >
-                                                            {s}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            </div>
+                                            <TVDiscovery key={index} API_BASE={API_BASE} onStream={handleStream} />
+                                        ) : group._radioWelcome ? (
+                                            <RadioDiscovery key={index} API_BASE={API_BASE} onStream={(station) => setActiveRadioStation(station)} />
                                         ) : (
-                                            <div key={index} style={{ marginBottom: '3rem' }}>
-                                                <h2 style={{
-                                                    marginBottom: '1.5rem',
-                                                    paddingLeft: '1rem',
-                                                    borderLeft: '4px solid var(--primary)',
-                                                    fontSize: '1.5rem',
-                                                    fontWeight: '600'
+                                            <div key={index} style={{ marginBottom: '4rem', animation: 'fadeIn 0.6s var(--ease-out) forwards' }}>
+                                                <div style={{ 
+                                                    display: 'flex', 
+                                                    alignItems: 'center', 
+                                                    gap: '12px', 
+                                                    marginBottom: '2rem',
+                                                    paddingLeft: '0.5rem'
                                                 }}>
-                                                    {group.title}
-                                                </h2>
+                                                    <div style={{ width: '6px', height: '32px', background: 'var(--primary-gradient)', borderRadius: '4px' }}></div>
+                                                    <h2 style={{
+                                                        fontSize: '1.8rem',
+                                                        fontWeight: '800',
+                                                        background: 'linear-gradient(to right, #fff, #94a3b8)',
+                                                        WebkitBackgroundClip: 'text',
+                                                        WebkitTextFillColor: 'transparent',
+                                                        letterSpacing: '-0.5px'
+                                                    }}>
+                                                        {group.title}
+                                                    </h2>
+                                                </div>
                                                 <div className={group.type === 'news' ? "news-grid" : "movie-card-grid"} style={{
                                                     display: 'grid',
                                                     gridTemplateColumns: group.type === 'news' ? 'repeat(auto-fill, minmax(300px, 1fr))' : 'repeat(auto-fill, minmax(220px, 1fr))',
                                                     gap: '2rem'
                                                 }}>
-                                                    {(Array.isArray(group.items) ? group.items : []).map((item, idx) => (
+                                                    {group.items.map((item, idx) => (
                                                         group.type === 'news' ?
-                                                            <NewsCard key={item.id || idx} item={item} onClick={(it) => setNewsReaderItem(it)} API_BASE={API_BASE} /> :
+                                                            <NewsCard key={item.id || idx} item={item} onClick={(it) => setNewsReaderItem(it)} API_BASE={CLOUD_BASE} /> :
                                                             (activeSource === 'music' ?
                                                                 <MusicCard key={`${item.id}-${index}-${idx}`} movie={item} onClick={handleItemClick} /> :
                                                                 <MovieCard key={`${item.id}-${index}-${idx}`} movie={item} onClick={handleItemClick} />)
@@ -1239,11 +1099,6 @@ function App() {
                                         <div>
                                             <h3>CineCLI Integration Ready</h3>
                                             <p>Search for torrents using the search bar above.</p>
-                                        </div>
-                                    ) : activeSource === 'anicli' ? (
-                                        <div>
-                                            <h3>Ani-CLI (Allmanga) Ready</h3>
-                                            <p>Search for anime via the terminal-style scraper.</p>
                                         </div>
                                     ) : (
                                         <>
@@ -1261,7 +1116,7 @@ function App() {
             </div>
 
             {
-                selectedItem && !novelReaderItem && !mangaReaderItem && (
+                selectedItem && !mangaReaderItem && (
                     <DetailsModal
                         item={selectedItem}
                         onClose={() => {
@@ -1332,33 +1187,18 @@ function App() {
                 />
             )}
 
-            {novelReaderItem && (
-                <NovelReader
-                    key={`novel-${novelReaderItem.item.id}`}
-                    item={novelReaderItem.item}
-                    chapterId={novelReaderItem.chapterId}
-                    chapterTitle={novelReaderItem.chapterTitle}
-                    API_BASE={API_BASE}
-                    onBack={() => {
-                        const item = novelReaderItem.item;
-                        const type = item && item.type ? item.type : 'novel';
-                        const src = item && item.source ? item.source : 'novel';
-                        internalNavRef.current = true; // GUARD TRANSITION
-                        setSelectedItem(item); // INSTANT RECOVERY
-                        setNovelReaderItem(null); // INSTANT HIDE READER
-                        navigate(`/details/${item.id}?source=${encodeURIComponent(src)}&type=${encodeURIComponent(type)}`);
-                    }}
-                    onChapterChange={(newId, newTitle) => {
-                        setNovelReaderItem(prev => ({ ...prev, chapterId: newId, chapterTitle: newTitle }));
-                    }}
-                />
-            )}
 
             {activeTrack && (
                 <MusicPlayer
                     track={activeTrack}
                     onClose={() => setActiveTrack(null)}
-                    API_BASE={getTargetBase('music')}
+                />
+            )}
+
+            {activeRadioStation && (
+                <RadioPlayer
+                    station={activeRadioStation}
+                    onClose={() => setActiveRadioStation(null)}
                 />
             )}
 
@@ -1366,12 +1206,35 @@ function App() {
                 <NewsReader
                     articleId={newsReaderItem.id}
                     onClose={() => setNewsReaderItem(null)}
-                    API_BASE={API_BASE}
+                    API_BASE={NEWS_API_BASE}
                 />
             )}
 
 
+            {/* Manual IP Modal */}
 
+            {globalError && (
+                <div style={{
+                    position: 'fixed',
+                    bottom: '20px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    background: '#ef4444',
+                    color: 'white',
+                    padding: '10px 20px',
+                    borderRadius: '8px',
+                    zIndex: 9999,
+                    fontSize: '0.85rem',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px'
+                }}>
+                    <span>⚠️ Error: {globalError}</span>
+                    <button onClick={() => setGlobalError(null)} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: 'white', cursor: 'pointer', borderRadius: '4px', padding: '2px 6px' }}>Dismiss</button>
+                    <button onClick={() => window.location.reload()} style={{ background: 'white', border: 'none', color: '#ef4444', cursor: 'pointer', borderRadius: '4px', padding: '2px 8px', fontWeight: 'bold' }}>Reload App</button>
+                </div>
+            )}
         </div>
     );
 }

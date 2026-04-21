@@ -3,7 +3,7 @@ import re
 
 class TVService:
     def __init__(self):
-        self.base_url = "https://raw.githubusercontent.com/famelack/famelack-channels/main/channels/raw"
+        self.base_url = "https://raw.githubusercontent.com/famelack/famelack-data/main/tv/raw"
         self.client = httpx.AsyncClient(timeout=20.0)
         self.cache = {}
 
@@ -19,28 +19,71 @@ class TVService:
             data = response.json()
 
             # Data format: {"AD": {"country": "Andorra", "hasChannels": true, ...}, ...}
-            countries = []
+            import asyncio
+            import json
+            import os
+
+            cache_file = os.path.join(os.getcwd(), 'tv_counts_cache.json')
+            cached_counts = {}
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'r') as f:
+                        cached_counts = json.load(f)
+                except: pass
+
+            semaphore = asyncio.Semaphore(10)
+            async def get_count(code):
+                if code in cached_counts:
+                    return cached_counts[code]
+                async with semaphore:
+                    try:
+                        r = await self.client.get(f"{self.base_url}/countries/{code.lower()}.json")
+                        if r.status_code == 200:
+                            count = len(r.json())
+                            cached_counts[code] = count
+                            return count
+                    except: pass
+                return 0
+
+            # Collect active countries
+            tasks = []
+            selected_countries = []
             for code, info in data.items():
                 if isinstance(info, dict) and info.get('hasChannels'):
-                    flag = ''
-                    if len(code) == 2 and code.isalpha():
-                        flag = ''.join(chr(0x1F1E6 + ord(c) - ord('A')) for c in code.upper())
-                    name = info.get('country', code)
-                    countries.append({
-                        "id": code.lower(),
-                        "title": f"{flag} {name}" if flag else name,
-                        "name": name,
-                        "poster_url": "",
-                        "type": "country",
-                        "source": "tv"
-                    })
+                    tasks.append(get_count(code))
+                    selected_countries.append((code, info))
+
+            print(f"[TVService] Scanning {len(tasks)} countries for channel counts...")
+            counts = await asyncio.gather(*tasks)
+            
+            # Save cache
+            try:
+                with open(cache_file, 'w') as f:
+                    json.dump(cached_counts, f)
+            except: pass
+
+            countries = []
+            for (code, info), count in zip(selected_countries, counts):
+                flag = ''
+                if len(code) == 2 and code.isalpha():
+                    flag = ''.join(chr(0x1F1E6 + ord(c) - ord('A')) for c in code.upper())
+                name = info.get('country', code)
+                countries.append({
+                    "id": code.lower(),
+                    "title": f"{flag} {name}" if flag else name,
+                    "name": name,
+                    "poster_url": "",
+                    "type": "country",
+                    "source": "tv",
+                    "timezone": info.get('timeZone') or info.get('LimeZone'),
+                    "total_channels": count
+                })
 
             countries.sort(key=lambda x: x["name"])
             self.cache['countries'] = countries
             return countries
         except Exception as e:
             print(f"[TVService] Error fetching countries: {e}")
-            import traceback; traceback.print_exc()
             return []
 
     async def get_channels_by_country(self, country_code: str):
@@ -108,58 +151,61 @@ class TVService:
         if video_match:
             return video_match.group(1), 'video'
 
+        # watch?v=VIDEO_ID format
+        watch_match = re.search(r'watch\?v=([A-Za-z0-9_-]{11})', url)
+        if watch_match:
+            return watch_match.group(1), 'video'
+
+        # youtu.be/VIDEO_ID format
+        short_match = re.search(r'youtu\.be/([A-Za-z0-9_-]{11})', url)
+        if short_match:
+            return short_match.group(1), 'video'
+
+        # channel/UCxxxx format
+        chan_path_match = re.search(r'channel/([A-Za-z0-9_-]+)', url)
+        if chan_path_match:
+            return chan_path_match.group(1), 'channel'
+
         return None, None
 
     def _format_channel(self, c: dict):
-        """
-        Normalizes a Famelack channel object to our standard item format.
-        Schema: nanoid, name, iptv_urls (list), youtube_urls (list), language, country, isGeoBlocked
-
-        For YouTube channels:
-          - Uses ythls.armelin.one/channel/VIDEO_ID.m3u8 to convert to HLS (bypasses Error 153)
-          - This is the same approach used by TV Garden and similar apps
-        For IPTV channels:
-          - Uses the direct M3U8 URL with HLS.js
-        """
         name = c.get('name', 'Unknown Channel')
 
-        # Filter out empty/blank URLs from both lists
-        iptv_urls = [u for u in (c.get('iptv_urls') or []) if u and u.strip()]
+        iptv_urls = [u for u in (c.get('stream_urls') or []) if u and u.strip()]
         youtube_urls = [u for u in (c.get('youtube_urls') or []) if u and u.strip()]
 
+        # Priority 1: Direct IPTV (HLS)
         if iptv_urls:
-            # Direct HLS stream — play with HLS.js
-            stream_url = iptv_urls[0]
-            stream_type = 'hls'
-        elif youtube_urls:
+            return {
+                "id": c.get('nanoid', name.replace(' ', '_').lower()),
+                "title": name,
+                "poster_url": c.get('logo', ''),
+                "url": iptv_urls[0],
+                "stream_type": "hls",
+                "source": "tv",
+                "type": "channel"
+            }
+        
+        # Priority 2: YouTube Live (Local HLS resolution via yt-dlp)
+        if youtube_urls:
             yt_url = youtube_urls[0]
             yt_id, id_type = self._extract_youtube_id(yt_url)
-
-            if yt_id:
-                # Use standard watch URL so backend resolver can get direct M3U8
-                # Fallback to embed is handled by the /api/tv/resolve endpoint
-                stream_url = f"https://www.youtube.com/watch?v={yt_id}"
-                stream_type = 'hls'
-            else:
-                stream_url = yt_url
-                stream_type = 'embed'
-        else:
-            # No valid stream URL — skip this channel entirely
-            return None
-
-        return {
-            "id": c.get('nanoid', name.replace(' ', '_').lower()),
-            "title": name,
-            "poster_url": c.get('logo', ''),
-            "url": stream_url,
-            "all_urls": iptv_urls,
-            "language": c.get('language', ''),
-            "country": c.get('country', ''),
-            "is_geo_blocked": c.get('isGeoBlocked', False),
-            "stream_type": stream_type,
-            "source": "tv",
-            "type": "channel"
-        }
+            
+            # If we extracted an ID, use it. If not, use the full URL as the yt_id 
+            # (the backend resolve endpoint will handle both).
+            final_yt_id = yt_id if yt_id else yt_url
+            
+            return {
+                "id": c.get('nanoid', name.replace(' ', '_').lower()),
+                "title": name,
+                "poster_url": c.get('logo', ''),
+                "yt_id": final_yt_id,
+                "stream_type": "youtube_hls",
+                "source": "tv",
+                "type": "channel"
+            }
+        
+        return None
 
     async def close(self):
         await self.client.aclose()
