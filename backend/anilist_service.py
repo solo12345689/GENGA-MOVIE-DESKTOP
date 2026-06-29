@@ -121,6 +121,7 @@ class AnilistService:
             genres
             averageScore
             seasonYear
+            nextAiringEpisode { episode }
           }
         }
         """
@@ -129,6 +130,9 @@ class AnilistService:
             if not data: return None
             
             m = data.get('Media', {})
+            next_ep = m.get('nextAiringEpisode')
+            next_ep_num = next_ep.get('episode') if (next_ep and isinstance(next_ep, dict)) else None
+
             return {
                 "id": str(m['id']),
                 "title": m['title']['english'] or m['title']['romaji'] or m['title']['native'],
@@ -136,6 +140,7 @@ class AnilistService:
                 "poster_url": m['coverImage']['extraLarge'] or m['coverImage']['large'],
                 "banner_url": m['bannerImage'],
                 "episodes_count": m['episodes'],
+                "next_ep_num": next_ep_num,
                 "status": m['status'],
                 "genres": m['genres'],
                 "rating": (m['averageScore'] / 10) if m['averageScore'] else 0,

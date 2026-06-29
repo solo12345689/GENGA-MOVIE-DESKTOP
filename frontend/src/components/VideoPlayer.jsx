@@ -112,7 +112,98 @@ const YouTubeIframePlayer = ({ url, source }) => {
     );
 };
 
+// ─── VideoJS Player Component for Live TV ─────────────────────────────────────
+const VideoJSPlayer = ({ url, title, onClose }) => {
+    const videoRef = useRef(null);
+    const playerRef = useRef(null);
+    const [loaded, setLoaded] = useState(false);
+
+    useEffect(() => {
+        if (!document.getElementById('videojs-css')) {
+            const link = document.createElement('link');
+            link.id = 'videojs-css';
+            link.rel = 'stylesheet';
+            link.href = 'https://vjs.zencdn.net/8.10.0/video-js.css';
+            document.head.appendChild(link);
+        }
+
+        const checkOrLoadScript = () => {
+            if (window.videojs) {
+                setLoaded(true);
+                return;
+            }
+            if (!document.getElementById('videojs-script')) {
+                const script = document.createElement('script');
+                script.id = 'videojs-script';
+                script.src = 'https://vjs.zencdn.net/8.10.0/video.min.js';
+                script.onload = () => setLoaded(true);
+                document.head.appendChild(script);
+            } else {
+                const poll = setInterval(() => {
+                    if (window.videojs) {
+                        clearInterval(poll);
+                        setLoaded(true);
+                    }
+                }, 100);
+            }
+        };
+        checkOrLoadScript();
+    }, []);
+
+    useEffect(() => {
+        if (!loaded || !videoRef.current) return;
+
+        if (!playerRef.current) {
+            const videoElement = videoRef.current;
+            playerRef.current = window.videojs(videoElement, {
+                autoplay: true,
+                controls: true,
+                responsive: true,
+                fluid: true,
+                liveui: true,
+                sources: [{
+                    src: url,
+                    type: (url && url.includes('.m3u8')) ? 'application/x-mpegURL' : 'video/mp4'
+                }]
+            });
+        } else {
+            playerRef.current.src({
+                src: url,
+                type: (url && url.includes('.m3u8')) ? 'application/x-mpegURL' : 'video/mp4'
+            });
+            playerRef.current.play();
+        }
+
+        return () => {
+            if (playerRef.current && !playerRef.current.isDisposed()) {
+                playerRef.current.dispose();
+                playerRef.current = null;
+            }
+        };
+    }, [loaded, url]);
+
+    return (
+        <div style={{ position: 'relative', width: '100%', height: '100%', background: '#000', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+            {/* Top Bar */}
+            <div style={{ position: 'absolute', top: 15, left: 20, right: 20, zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', pointerEvents: 'auto' }}>
+                <button onClick={onClose} style={{ background: 'rgba(0,0,0,0.7)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    ← Back
+                </button>
+                <div style={{ color: '#fff', fontWeight: 'bold', fontSize: '1.1rem', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
+                    {title}
+                </div>
+            </div>
+            <div data-vjs-player style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <video ref={videoRef} className="video-js vjs-big-play-centered vjs-theme-forest" style={{ width: '100%', height: '100%' }} />
+            </div>
+        </div>
+    );
+};
+
 const VideoPlayer = ({ url, type = 'hls', title, subtitles = [], onClose, onNext, showNext, autoPlay = true, source = 'moviebox' }) => {
+    if (source === 'tv' || type === 'channel' || type === 'tv') {
+        return <VideoJSPlayer url={url} title={title} onClose={onClose} />;
+    }
     const videoRef = useRef(null);
     const [isPlaying, setIsPlaying] = useState(autoPlay);
     const [isBuffering, setIsBuffering] = useState(true);

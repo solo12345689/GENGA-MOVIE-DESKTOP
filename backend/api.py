@@ -1,3 +1,9 @@
+import enum
+if not hasattr(enum, 'StrEnum'):
+    class StrEnum(str, enum.Enum):
+        pass
+    enum.StrEnum = StrEnum
+
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, Response, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -1709,16 +1715,25 @@ async def get_anime_episodes(anime_id: str):
         if not info: 
             return {"status": 404, "data": {"episodes": []}}
         
-        count = info.get('episodes_count')
+        total_planned = info.get('episodes_count')
+        next_ep_num = info.get('next_ep_num')
+        status = info.get('status')
         
-        # If episodes_count is None (airing), check if we have airing episode info
-        if not count and info.get('next_episode'):
-            count = int(info['next_episode']) - 1
+        # Determine ONLY ALREADY AIRED EPISODES
+        if next_ep_num:
+            # next_ep_num is the episode number that WILL air next, so latest aired is next_ep_num - 1
+            count = next_ep_num - 1
+        elif status == 'FINISHED':
+            count = total_planned or 1
+        elif status == 'NOT_YET_RELEASED':
+            count = 0
+        else:
+            count = total_planned or 1
             
-        if not count: count = 1 # Fallback
+        count = max(0, int(count or 0))
         
         episodes = []
-        for i in range(1, int(count) + 1):
+        for i in range(1, count + 1):
             episodes.append({
                 "number": i,
                 "episodeId": str(i),

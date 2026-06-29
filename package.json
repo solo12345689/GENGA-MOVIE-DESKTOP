@@ -20,7 +20,6 @@
         },
         "win": {
             "icon": "build/icon.ico",
-            "signingHashAlgorithms": [],
             "target": [
                 {
                     "target": "nsis",
@@ -62,7 +61,7 @@
         "cors": "^2.8.6"
     },
     "devDependencies": {
-        "electron": "^31.0.0",
-        "electron-builder": "^24.13.3"
+        "electron": "31.0.0",
+        "electron-builder": "24.13.3"
     }
 }

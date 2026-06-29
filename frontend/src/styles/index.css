@@ -160,8 +160,8 @@ h1 {
 }
 
 .input-glass:focus {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 2px var(--primary-glow);
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.5);
   outline: none;
 }

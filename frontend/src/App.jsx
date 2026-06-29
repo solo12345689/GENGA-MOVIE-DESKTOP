@@ -835,75 +835,19 @@ function App() {
 
                 <main className="container" style={{ paddingTop: '1rem' }}>
 
-                    {/* PRO-AESTHETIC HERO HEADER */}
-                    <div style={{
-                        position: 'relative',
-                        padding: '3rem 2rem',
-                        marginBottom: '3rem',
-                        borderRadius: 'var(--radius-lg)',
-                        background: 'linear-gradient(225deg, rgba(99, 102, 241, 0.1) 0%, rgba(6, 182, 212, 0.05) 100%)',
-                        border: '1px solid var(--border-glass)',
-                        overflow: 'hidden',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        textAlign: 'center',
-                        animation: 'fadeIn 0.8s var(--ease-out)'
-                    }}>
-                        {/* Decorative Blur Spheres */}
-                        <div style={{ position: 'absolute', top: '-50px', right: '-50px', width: '200px', height: '200px', background: 'var(--primary-glow)', filter: 'blur(80px)', opacity: 0.4, borderRadius: '50%' }}></div>
-                        <div style={{ position: 'absolute', bottom: '-20px', left: '-20px', width: '150px', height: '150px', background: 'var(--accent-glow)', filter: 'blur(60px)', opacity: 0.3, borderRadius: '50%' }}></div>
-                        
-                        <div style={{ position: 'relative', zIndex: 1 }}>
-                            <div style={{ 
-                                color: 'var(--accent-cyan)', 
-                                fontSize: '0.8rem', 
-                                fontWeight: '900', 
-                                letterSpacing: '4px', 
-                                textTransform: 'uppercase', 
-                                marginBottom: '1rem',
-                                opacity: 0.9
-                            }}>
-                                {activeSource === 'home' ? 'Recommended for you' :
-                                 activeSource === 'moviebox' ? 'Cinematic Library' :
-                                 activeSource === 'anilist' ? 'Anime Portal' :
-                                 activeSource === 'manga' ? 'Manga Sanctuary' :
-                                 activeSource === 'music' ? 'Sonic Waves' :
-                                 activeSource === 'news' ? 'Global Pulse' :
-                                 activeSource === 'tv' ? 'Broadcast Live' :
-                                 activeSource === 'history' ? 'Revisit the Past' : 'Genga Movies'}
-                            </div>
-                            <h1 style={{ 
-                                fontSize: '4rem', 
-                                marginBottom: '1.5rem',
-                                background: 'linear-gradient(to bottom right, #fff, #94a3b8)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                letterSpacing: '-2px'
-                            }}>
-                                {activeSource === 'home' ? 'Unlimited Entertainment.' :
-                                 activeSource === 'moviebox' ? 'Explore Movies & Series' :
-                                 activeSource === 'anilist' ? 'Dive into Anime' :
-                                 activeSource === 'manga' ? 'Read Best Manga' :
-                                 activeSource === 'music' ? 'Your Personal Soundtrack' :
-                                 activeSource === 'news' ? 'Latest Global News' :
-                                 activeSource === 'tv' ? 'Stream Channels' :
-                                 activeSource === 'history' ? 'Your Watch History' : 'Welcome to Genga'}
-                            </h1>
-                            
-                            {/* SEARCH INTEGRATION INSIDE HERO */}
-                            {activeSource !== 'history' && activeSource !== 'tv' && activeSource !== 'radio' && activeSource !== 'news' && (
-                                <SearchBar
-                                    onSearch={handleSearch}
-                                    placeholder={
-                                        activeSource === 'music' ? 'Search tracks or playlists...' :
+                    {/* NORMAL TOP SEARCH BAR */}
+                    {activeSource !== 'history' && activeSource !== 'tv' && activeSource !== 'radio' && activeSource !== 'news' && (
+                        <div style={{ padding: '1rem 0 2rem 0', display: 'flex', justifyContent: 'center' }}>
+                            <SearchBar
+                                onSearch={handleSearch}
+                                placeholder={
+                                    activeSource === 'music' ? 'Search tracks or playlists...' :
                                         activeSource === 'manga' ? "Search manga titles..." :
-                                        activeSource === 'anilist' ? "Search anime titles..." :
-                                        'What do you want to watch today?'}
-                                />
-                            )}
+                                            activeSource === 'anilist' ? "Search anime titles..." :
+                                                'Search movies, TV shows, anime, manga...'}
+                            />
                         </div>
-                    </div>
+                    )}
 
                     {activeSource === 'history' && (
                         <div style={{ padding: '1rem 0' }}>
@@ -1057,10 +1001,10 @@ function App() {
                                             <RadioDiscovery key={index} API_BASE={API_BASE} onStream={(station) => setActiveRadioStation(station)} />
                                         ) : (
                                             <div key={index} style={{ marginBottom: '4rem', animation: 'fadeIn 0.6s var(--ease-out) forwards' }}>
-                                                <div style={{ 
-                                                    display: 'flex', 
-                                                    alignItems: 'center', 
-                                                    gap: '12px', 
+                                                <div style={{
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '12px',
                                                     marginBottom: '2rem',
                                                     paddingLeft: '0.5rem'
                                                 }}>

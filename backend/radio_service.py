@@ -41,8 +41,9 @@ class RadioService:
 
     def _format_channel(self, c: dict):
         name = c.get('name', 'Unknown Station')
-        # Audio streams are in 'stream_urls'
-        stream_urls = [u for u in (c.get('stream_urls') or []) if u and u.strip()]
+        sources = c.get('sources') or {}
+        # Audio streams are in 'stream_urls' or 'sources.streams'
+        stream_urls = [u for u in (c.get('stream_urls') or sources.get('streams') or []) if u and str(u).strip()]
 
         if not stream_urls:
             return None
@@ -50,7 +51,7 @@ class RadioService:
         return {
             "id": c.get('nanoid', name.replace(' ', '_').lower()),
             "title": name,
-            "poster_url": c.get('logo', ''),
+            "poster_url": c.get('logo', '') or c.get('logo_url', '') or c.get('image', ''),
             "url": stream_urls[0],
             "stream_type": "hls", # Radio streams are also usually HLS/AAC
             "source": "radio",

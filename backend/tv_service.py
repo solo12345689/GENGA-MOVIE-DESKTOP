@@ -171,15 +171,16 @@ class TVService:
     def _format_channel(self, c: dict):
         name = c.get('name', 'Unknown Channel')
 
-        iptv_urls = [u for u in (c.get('stream_urls') or []) if u and u.strip()]
-        youtube_urls = [u for u in (c.get('youtube_urls') or []) if u and u.strip()]
+        sources = c.get('sources') or {}
+        iptv_urls = [u for u in (c.get('stream_urls') or sources.get('streams') or []) if u and str(u).strip()]
+        youtube_urls = [u for u in (c.get('youtube_urls') or sources.get('youtube') or []) if u and str(u).strip()]
 
         # Priority 1: Direct IPTV (HLS)
         if iptv_urls:
             return {
                 "id": c.get('nanoid', name.replace(' ', '_').lower()),
                 "title": name,
-                "poster_url": c.get('logo', ''),
+                "poster_url": c.get('logo', '') or c.get('logo_url', '') or c.get('image', ''),
                 "url": iptv_urls[0],
                 "stream_type": "hls",
                 "source": "tv",
@@ -198,7 +199,7 @@ class TVService:
             return {
                 "id": c.get('nanoid', name.replace(' ', '_').lower()),
                 "title": name,
-                "poster_url": c.get('logo', ''),
+                "poster_url": c.get('logo', '') or c.get('logo_url', '') or c.get('image', ''),
                 "yt_id": final_yt_id,
                 "stream_type": "youtube_hls",
                 "source": "tv",

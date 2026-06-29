@@ -65,9 +65,11 @@ test_manga_service.py
 test_manga_service2.py
 tmp_test_backend.py
 
-# Large JSON dumps
+# Large JSON dumps & Caches
 *debug*.json
 *output*.json
+*_cache.json
+*.cache
 full_homepage.json
 lib_homepage_raw.json
 

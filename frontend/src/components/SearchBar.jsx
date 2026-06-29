@@ -83,9 +83,9 @@ const SearchBar = ({ onSearch, placeholder = "Search..." }) => {
                         onBlur={() => setIsFocused(false)}
                         style={{ 
                             paddingLeft: '3.5rem', 
-                            paddingRight: '4rem',
+                            paddingRight: '1.5rem',
                             background: isFocused ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.3)',
-                            boxShadow: isFocused ? '0 0 30px var(--primary-glow)' : 'none',
+                            boxShadow: isFocused ? '0 0 20px rgba(255,255,255,0.08)' : 'none',
                         }}
                     />
                     
@@ -95,36 +95,12 @@ const SearchBar = ({ onSearch, placeholder = "Search..." }) => {
                         left: '1.5rem',
                         top: '50%',
                         transform: 'translateY(-50%)',
-                        color: isFocused ? 'var(--primary)' : 'var(--text-muted)',
+                        color: isFocused ? '#ffffff' : 'var(--text-muted)',
                         transition: 'color 0.3s',
                         pointerEvents: 'none'
                     }}>
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                     </div>
-
-                    {/* Submit Button (Hidden text, shows icon) */}
-                    <button
-                        type="submit"
-                        style={{
-                            position: 'absolute',
-                            right: '1.2rem',
-                            top: '50%',
-                            transform: 'translateY(-50%)',
-                            background: 'var(--primary-gradient)',
-                            border: 'none',
-                            color: 'white',
-                            borderRadius: '12px',
-                            padding: '8px 16px',
-                            fontSize: '0.8rem',
-                            fontWeight: 'bold',
-                            cursor: 'pointer',
-                            opacity: isFocused ? 1 : 0,
-                            transition: 'all 0.3s',
-                            boxShadow: '0 4px 15px var(--primary-glow)'
-                        }}
-                    >
-                        GO
-                    </button>
                 </div>
             </form>
 
@@ -153,7 +129,7 @@ const SearchBar = ({ onSearch, placeholder = "Search..." }) => {
                     }}>
                         <span>RECENT SEARCHES</span>
                         <span 
-                            style={{ cursor: 'pointer', color: 'var(--primary)', '&:hover': { textDecoration: 'underline' } }} 
+                            style={{ cursor: 'pointer', color: 'var(--text-muted)', '&:hover': { color: '#ffffff', textDecoration: 'underline' } }} 
                             onClick={() => saveHistory([])}
                         >
                             CLEAR ALL
@@ -179,7 +155,7 @@ const SearchBar = ({ onSearch, placeholder = "Search..." }) => {
                             onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                         >
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" style={{ opacity: 0.6 }}>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" style={{ opacity: 0.6 }}>
                                     <circle cx="12" cy="12" r="10"></circle>
                                     <polyline points="12 6 12 12 16 14"></polyline>
                                 </svg>
