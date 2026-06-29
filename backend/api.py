@@ -773,70 +773,87 @@ async def debug_search(query: str) -> dict:
         return {"error": str(e)}
 
 @router.get("/details/{item_id}")
-async def details(item_id: str) -> dict:
+async def details(item_id: str, type: str = 'movie') -> dict:
     """
     Retrieves detailed information (plot, rating, seasons) for a specific item.
     """
     if item_id not in search_cache:
-        raise HTTPException(status_code=404, detail="Item not found in cache. Please search again.")
+        search_cache[item_id] = {
+            "item": {"id": item_id, "title": "", "subjectType": 2 if type == "series" else (3 if type == "anime" else 1)},
+            "search_instance": None,
+            "type": type,
+            "is_homepage": True,
+            "needs_search": True
+        }
     
     cached = search_cache[item_id]
     item = cached["item"]
-    search_instance = cached["search_instance"]
-    item_type = cached.get("type", "movie")
+    search_instance = cached.get("search_instance")
+    item_type = cached.get("type", type)
     
     try:
-        # If this is a homepage item, we can often bypass the fresh search
-        if cached.get("needs_search", False):
-            print(f"[FAST-PATH] Bypassing search for homepage item: {getattr(item, 'title', 'Unknown')}")
-            
-            # Construct a mock search item that moviebox_api can accept
-            class MockSearchItem(SearchResultsItem):
-                def __init__(self, fields_dict, sid, stype):
-                    # Use object.__setattr__ to bypass Pydantic's validation 
-                    # while still being an instance of SearchResultsItem
-                    object.__setattr__(self, 'id', sid)
-                    object.__setattr__(self, 'subjectId', sid)
-                    object.__setattr__(self, 'subjectType', stype)
-                    
-                    # detailPath is required for calculating page_url in moviebox_api.models
-                    detail_path = "movie" if stype == 1 else "tv"
-                    object.__setattr__(self, 'detailPath', detail_path)
-                    
-                    # Copy all other fields from original item
-                    for k, v in fields_dict.items():
-                        if not hasattr(self, k):
-                            object.__setattr__(self, k, v)
-            
-            # Use original subjectType if available, fallback to normalized logic
-            raw_stype = getattr(item, 'subjectType', None)
+        item_fields = cached.get("item", {})
+        if isinstance(item_fields, dict):
+            detail_path = item_fields.get("detailPath")
+            item_title = item_fields.get("title", "")
+        else:
+            detail_path = getattr(item_fields, "detailPath", None)
+            item_title = getattr(item_fields, "title", "")
+
+        needs_lookup = cached.get("needs_search", False) or not detail_path or detail_path in ["movie", "tv"]
+        
+        if needs_lookup and item_title:
+            print(f"[LOOKUP-PATH] Performing title lookup for item: {item_title}")
+            raw_stype = item_fields.get('subjectType') if isinstance(item_fields, dict) else getattr(item, 'subjectType', None)
             if raw_stype == 1: subject_type = SubjectType.MOVIES
             elif raw_stype == 2: subject_type = SubjectType.TV_SERIES
-            elif raw_stype == 3: subject_type = SubjectType.ALL # Anime
+            elif raw_stype == 3: subject_type = SubjectType.ALL
             else:
-                # Fallback based on item_type
                 if item_type == "anime": subject_type = SubjectType.ALL
                 elif item_type == "series": subject_type = SubjectType.TV_SERIES
                 else: subject_type = SubjectType.MOVIES
+
+            from moviebox_api.v1 import Search
+            s_inst = Search(session=session, query=item_title, subject_type=subject_type)
+            try:
+                s_res = await s_inst.get_content_model()
+                real_item = None
+                if s_res and hasattr(s_res, 'items') and s_res.items:
+                    for candidate in s_res.items:
+                        cand_id = str(getattr(candidate, 'subjectId', getattr(candidate, 'id', '')))
+                        if cand_id == str(item_id):
+                            real_item = candidate
+                            break
+                    if not real_item:
+                        real_item = s_res.items[0]
+                if real_item:
+                    item = real_item
+                    search_instance = s_inst
+                    search_cache[item_id]["item"] = item
+                    search_cache[item_id]["search_instance"] = search_instance
+                    search_cache[item_id]["needs_search"] = False
+                    print(f"[LOOKUP-PATH] Resolved real detailPath: {getattr(real_item, 'detailPath', 'None')}")
+            except Exception as lookup_err:
+                print(f"[LOOKUP-PATH] Title lookup failed: {lookup_err}")
+
+        if not search_instance or not hasattr(search_instance, 'get_item_details'):
+            class MockSearchItem(SearchResultsItem):
+                def __init__(self, fields_dict, sid, stype):
+                    object.__setattr__(self, 'id', sid)
+                    object.__setattr__(self, 'subjectId', sid)
+                    object.__setattr__(self, 'subjectType', stype)
+                    dp = fields_dict.get('detailPath') if isinstance(fields_dict, dict) else getattr(fields_dict, 'detailPath', None)
+                    object.__setattr__(self, 'detailPath', dp or ("movie" if stype == 1 else "tv"))
+                    if isinstance(fields_dict, dict):
+                        for k, v in fields_dict.items():
+                            if not hasattr(self, k): object.__setattr__(self, k, v)
             
-            # Use this mock item
-            item_fields = cached.get("item", {})
-            mock_detail_path = item_fields.get("detailPath")
-            item = MockSearchItem(item_fields, item_fields['id'], raw_stype or (1 if subject_type == SubjectType.MOVIES else 2))
-            # If we have a cached detailPath, set it explicitly to override the default "movie"/"tv" logic
-            if mock_detail_path:
-                object.__setattr__(item, 'detailPath', mock_detail_path)
-            
-            # We still need a search instance to call get_item_details
-            # An empty query search instance is fine for details fetching
+            raw_stype = item_fields.get('subjectType') if isinstance(item_fields, dict) else getattr(item, 'subjectType', 1)
+            subject_type = SubjectType.MOVIES if raw_stype == 1 else (SubjectType.TV_SERIES if raw_stype == 2 else SubjectType.ALL)
+            if not isinstance(item, SearchResultsItem):
+                item = MockSearchItem(item_fields, item_id, raw_stype)
             from moviebox_api.v1 import Search
             search_instance = Search(session=session, query='', subject_type=subject_type)
-            
-            # Update cache so we don't do this again if refreshed
-            search_cache[item_id]["item"] = item
-            search_cache[item_id]["search_instance"] = search_instance
-            search_cache[item_id]["needs_search"] = False
-            print(f"[FAST-PATH] Mock item constructed successfully for {item_id}")
 
         
         # Use the search instance to get details for this item
