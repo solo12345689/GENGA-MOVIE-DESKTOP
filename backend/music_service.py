@@ -3,7 +3,13 @@ from typing import List, Optional, Dict, Any
 
 class MusicService:
     def __init__(self):
-        self.gaanapy = GaanaPy()
+        self._gaanapy = None
+
+    @property
+    def gaanapy(self):
+        if self._gaanapy is None:
+            self._gaanapy = GaanaPy()
+        return self._gaanapy
 
     async def search_songs(self, query: str, limit: int = 20):
         # Result is already a list or dict from gaanapy

@@ -83,6 +83,8 @@ function App() {
     const [videoPlayerData, setVideoPlayerData] = useState(null); // For WatchPage
     const [mangaReaderItem, setMangaReaderItem] = useState(null); // For MangaReader
     const [activeTrack, setActiveTrack] = useState(null); // For MusicPlayer
+    const [currentPlaylist, setCurrentPlaylist] = useState([]);
+    const [currentTrackIndex, setCurrentTrackIndex] = useState(-1);
     const [detailsLoading, setDetailsLoading] = useState(false);
     const [newsReaderItem, setNewsReaderItem] = useState(null);
     const [activeRadioStation, setActiveRadioStation] = useState(null);
@@ -167,11 +169,11 @@ function App() {
                         if (data.groups) setHomepageContent(data.groups);
                     }
                     setHomepageLoading(false);
-                } else if (retryCount < 4) {
+                } else if (retryCount < 15) {
                     throw new Error(`HTTP ${res.status}`);
                 }
             } catch (err) {
-                if (retryCount < 4) {
+                if (retryCount < 15) {
                     // Wait 2s and retry
                     setTimeout(() => fetchHomepage(retryCount + 1), 2000);
                     return;
@@ -317,16 +319,28 @@ function App() {
             }
         } catch (err) {
             console.error("Search failed", err);
-            // Detailed error alerting with Cold Start explanation
-            const isColdStart = err.message === 'Failed to fetch' || err.message.includes('timeout');
-            const coldStartMsg = isColdStart ? "\n\nNote: This might be a 'Cold Start'. Render servers sleep after inactivity. Please wait 30 seconds and try again." : "";
-            alert(`Connection Failed!\n\nError: ${err.message}${coldStartMsg}\n\nPlease ensure your backend is reachable.`);
+            // Clean connection error notification for the desktop app
+            const isConnectionFailed = err.message === 'Failed to fetch' || err.message.includes('timeout') || err.message.includes('NetworkError');
+            if (isConnectionFailed) {
+                alert("Connection Failed!\n\nThe local services might still be starting up. Please wait a few seconds and try your search again.");
+            } else {
+                alert(`Search failed: ${err.message}`);
+            }
         } finally {
             setLoading(false);
         }
     };
 
-    const handleMusicPlay = async (item) => {
+    const handleMusicPlay = async (item, playlistTracks = null) => {
+        if (item.stream_url && playlistTracks && playlistTracks.length > 0) {
+            const idx = playlistTracks.findIndex(t => String(t.id) === String(item.id) || String(t.track_id) === String(item.track_id));
+            setCurrentPlaylist(playlistTracks);
+            setCurrentTrackIndex(idx !== -1 ? idx : 0);
+            setActiveTrack(item);
+            setSelectedItem(null);
+            return;
+        }
+
         setDetailsLoading(true);
         try {
             const base = getTargetBase(activeSource);
@@ -334,16 +348,25 @@ function App() {
             const data = await res.json();
 
             let trackToPlay = data;
+            let queue = [];
+            let index = 0;
+
             if (item.type === 'music_playlist') {
                 const tracks = data.tracks || (Array.isArray(data) ? data : []);
                 if (tracks.length > 0) {
                     trackToPlay = tracks[0];
-                    // Add source info if missing
                     if (!trackToPlay.source) trackToPlay.source = 'music';
+                    queue = tracks;
+                    index = 0;
                 }
+            } else {
+                queue = [trackToPlay];
+                index = 0;
             }
 
             if (trackToPlay && trackToPlay.stream_url) {
+                setCurrentPlaylist(queue);
+                setCurrentTrackIndex(index);
                 setActiveTrack(trackToPlay);
                 setSelectedItem(null); // Close modal if open
             } else {
@@ -464,7 +487,7 @@ function App() {
 
     // Use a ref to prevent double-execution of streams (e.g. StrictMode or ghost clicks)
     const streamGuardRef = React.useRef(null);
-    const handleStream = async (item, season = null, episode = null) => {
+    const handleStream = async (item, season = null, episode = null, playlistTracks = null) => {
         if (!item) return;
 
         // Simple debounce guard
@@ -475,7 +498,7 @@ function App() {
         streamGuardRef.current = { id: item.id, time: now };
 
         if (item.source === 'music' || item.type === 'music' || item.type === 'music_playlist') {
-            handleMusicPlay(item);
+            handleMusicPlay(item, playlistTracks);
             return;
         }
 
@@ -503,12 +526,12 @@ function App() {
         const preload = {
             item: { ...item, source: src },
             season: season || null,
-            episode: episode || null,
+            episode: epValue || null,
             animeEpisodes: item && item.animeEpisodes ? item.animeEpisodes : null
         };
         // Navigate to watch route with episode and source params
         const params = new URLSearchParams();
-        if (episode !== null && episode !== undefined) params.set('episode', String(episode));
+        if (epValue !== null && epValue !== undefined) params.set('episode', String(epValue));
         if (season !== null && season !== undefined) params.set('season', String(season));
         params.set('source', src);
 
@@ -716,8 +739,9 @@ function App() {
                 const type = params.get('type') || 'movie';
 
                 // Sync activeSource state if it differs from the URL (handles deep-linking)
-                if (source !== activeSource && source !== 'home' && activeSource !== 'history') {
-                    setActiveSource(source);
+                const targetSource = source === 'moviebox' ? 'home' : source;
+                if (targetSource !== activeSource && activeSource !== 'history') {
+                    setActiveSource(targetSource);
                 }
 
                 let effectiveItem = selectedItem;
@@ -764,8 +788,9 @@ function App() {
                 const season = params.get('season');
                 const source = params.get('source') || 'moviebox';
 
-                if (source !== activeSource && source !== 'home' && activeSource !== 'history') {
-                    setActiveSource(source);
+                const targetSource = source === 'moviebox' ? 'home' : source;
+                if (targetSource !== activeSource && activeSource !== 'history') {
+                    setActiveSource(targetSource);
                 }
 
                 const shouldReload = !videoPlayerData ||
@@ -1135,7 +1160,19 @@ function App() {
             {activeTrack && (
                 <MusicPlayer
                     track={activeTrack}
-                    onClose={() => setActiveTrack(null)}
+                    playlist={currentPlaylist}
+                    currentIndex={currentTrackIndex}
+                    onTrackChange={(index) => {
+                        if (index >= 0 && index < currentPlaylist.length) {
+                            setCurrentTrackIndex(index);
+                            setActiveTrack(currentPlaylist[index]);
+                        }
+                    }}
+                    onClose={() => {
+                        setActiveTrack(null);
+                        setCurrentPlaylist([]);
+                        setCurrentTrackIndex(-1);
+                    }}
                 />
             )}
 

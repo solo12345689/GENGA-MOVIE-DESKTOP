@@ -1,9 +1,9 @@
 
+import os
 import httpx
 import sys
-import os
 
-log_path = r"c:\Users\akshi\.gemini\antigravity\scratch\moviebox_web_app\backend\fogtwist_headers_log.txt"
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fogtwist_headers_log.txt")
 url = "https://fogtwist21.xyz/_v7/bcc52d54faa312a4db378d17489cb8a004d0e466d2734810803aa4ceb961f23f284642f711fba4bbca93d3ce1f4a812a7d7f9cd4c48150fef35b7c3f31be6b6fded8afc1bab364cdd53e67ee2a279e91515dd28bd0f91d4ffd14b5e2dfd5b6283d011385480e67b720707cf4dc4daa744f35ffd57103b2cb10437298d113311f/master.m3u8"
 
 tests = [

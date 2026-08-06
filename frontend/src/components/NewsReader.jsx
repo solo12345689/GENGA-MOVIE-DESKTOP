@@ -9,7 +9,7 @@ const NewsReader = ({ articleId, onClose, API_BASE }) => {
         const fetchArticle = async () => {
             setLoading(true);
             try {
-                const res = await fetch(`${API_BASE}/news/ann/info?id=${encodeURIComponent(articleId)}`);
+                const res = await fetch(`${API_BASE}/api/news/ann/info?id=${encodeURIComponent(articleId)}`);
                 if (res.ok) {
                     const data = await res.json();
                     setArticle(data);

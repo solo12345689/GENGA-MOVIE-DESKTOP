@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 
-const MusicPlayer = ({ track, onClose }) => {
+const MusicPlayer = ({ track, playlist, currentIndex, onTrackChange, onClose }) => {
     const audioRef = useRef(null);
     const [isPlaying, setIsPlaying] = useState(true);
     const [currentTime, setCurrentTime] = useState(0);
@@ -66,11 +66,7 @@ const MusicPlayer = ({ track, onClose }) => {
         const audio = audioRef.current;
         if (audio) {
             if (audio.paused) {
-                // If the audio element already has an error, don't try to play it
-                if (audio.error) {
-                    // console.log("[MusicPlayer] Cannot play: audio has error", audio.error.message);
-                    return;
-                }
+                if (audio.error) return;
                 try {
                     await audio.play();
                 } catch (e) {
@@ -96,6 +92,18 @@ const MusicPlayer = ({ track, onClose }) => {
         const min = Math.floor(seconds / 60);
         const sec = Math.floor(seconds % 60);
         return `${min}:${sec < 10 ? '0' : ''}${sec}`;
+    };
+
+    const handleNext = () => {
+        if (playlist && currentIndex < playlist.length - 1) {
+            onTrackChange(currentIndex + 1);
+        }
+    };
+
+    const handlePrev = () => {
+        if (playlist && currentIndex > 0) {
+            onTrackChange(currentIndex - 1);
+        }
     };
 
     return (
@@ -124,11 +132,11 @@ const MusicPlayer = ({ track, onClose }) => {
                 onTimeUpdate={handleTimeUpdate}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
+                onEnded={handleNext}
                 onError={() => {
                     const error = audioRef.current?.error;
                     const msg = error?.message || error || '';
                     if (msg.includes('DEMUXER_ERROR_COULD_NOT_PARSE')) return;
-                    // console.error("[MusicPlayer] Audio element error:", msg);
                 }}
             />
 
@@ -154,7 +162,23 @@ const MusicPlayer = ({ track, onClose }) => {
             {/* Controls */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', width: '40%' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
-                    <button style={{ background: 'transparent', border: 'none', color: '#fff', fontSize: '1.2rem', cursor: 'pointer', opacity: 0.7 }}>⏮</button>
+                    {playlist && playlist.length > 1 && (
+                        <button
+                            onClick={handlePrev}
+                            disabled={currentIndex === 0}
+                            style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#fff',
+                                fontSize: '1.2rem',
+                                cursor: currentIndex === 0 ? 'not-allowed' : 'pointer',
+                                opacity: currentIndex === 0 ? 0.3 : 0.7,
+                                transition: 'opacity 0.2s'
+                            }}
+                        >
+                            ⏮
+                        </button>
+                    )}
                     <button
                         onClick={togglePlay}
                         style={{
@@ -176,7 +200,23 @@ const MusicPlayer = ({ track, onClose }) => {
                     >
                         {isPlaying ? '⏸' : '▶'}
                     </button>
-                    <button style={{ background: 'transparent', border: 'none', color: '#fff', fontSize: '1.2rem', cursor: 'pointer', opacity: 0.7 }}>⏭</button>
+                    {playlist && playlist.length > 1 && (
+                        <button
+                            onClick={handleNext}
+                            disabled={currentIndex === playlist.length - 1}
+                            style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#fff',
+                                fontSize: '1.2rem',
+                                cursor: currentIndex === playlist.length - 1 ? 'not-allowed' : 'pointer',
+                                opacity: currentIndex === playlist.length - 1 ? 0.3 : 0.7,
+                                transition: 'opacity 0.2s'
+                            }}
+                        >
+                            ⏭
+                        </button>
+                    )}
                 </div>
 
                 <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '12px' }}>

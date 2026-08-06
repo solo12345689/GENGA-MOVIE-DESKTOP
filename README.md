@@ -1,6 +1,6 @@
-#  GENGA MOVIES App
+# GENGA MOVIE DESKTOP APP
 
-**Genga Movies App** is a self-hosted web interface for aggregating metadata and controlling media playback. It connects to external APIs to resolve stream URLs and provides a unified frontend for search and discovery.
+**Genga Movie Desktop App** is an exclusive desktop application for aggregating media metadata and streaming playback. It integrates local scraping servers, API resolvers, and web player wrappers inside a unified, feature-rich interface.
 
 ---
 
@@ -9,7 +9,7 @@
 ### What this is
 -   A **metadata aggregator** that pulls info from MovieBox, Anilist & MegaPlay, and YTS.
 -   A **playback controller** that delegates streaming to embedded players or local proxies.
--   A **technical demonstration** of FastAPI and React integration.
+-   A **desktop application shell** running under Electron wrapping local python and node servers.
 
 ### What this is not
 -   A content hosting platform.
@@ -70,13 +70,16 @@
 
 ## 🧰 Tech Stack
 
-**Backend**
--   **FastAPI**: Async Python web framework.
--   **HTTPX**: Asynchronous HTTP client.
--   **Uvicorn**: ASGI server implementation.
+**App Shell & Wrapper**
+-   **Electron**: Main process wrapper, lifecycle management, CORS/CSP header stripping, custom User-Agent injection.
 
-**Frontend**
--   **React 18**: Frontend library.
+**Backend Providers**
+-   **FastAPI (Python)**: ASGI API provider for MovieBox, CineCLI (YTS), TV (IPTV), Radio, and Anilist anime services.
+-   **Node.js (Express Bridge)**: Local scraping endpoints running on port 3001 using `@consumet/extensions` for Manga (MangaPill) and News (ANN).
+-   **HTTPX & Axios**: Asynchronous HTTP clients for backend communications.
+
+**Frontend UI**
+-   **React 18**: Single-page application library.
 -   **Vite**: Build tool and dev server.
 -   **CSS Modules**: Component-scoped styling.
 
@@ -89,9 +92,7 @@
 -   **How it works**: Combines metadata from TMDB with direct stream links from indexed file hosts.
 -   **Stream Button**: Resolves the direct MP4/MKV link and plays it in the integrated player.
 -   **Download Button**: Routes the request through the **Backend Download Proxy** (`/api/proxy/download`). This creates a tunnel, allowing you to download files even if the host blocks direct browser downloads (CORS/Referer protection).
--   **Local vs Cloud**:
-    -   **Local Mode**: Frontend talks to your running `localhost:8080` server. Recommended for maximum speed and proxy capabilities.
-    -   **Cloud Mode**: Frontend connects to a public community instance. Useful if you can't run Python locally.
+-   **Local Server**: Frontend talks to your running `localhost:8000` server. Recommended for maximum speed and proxy capabilities.
 
 ### 2. Anilist & MegaPlay (Anime)
 *Specialized Anime scraper.*
@@ -118,111 +119,116 @@
 
 ### 6. News (Feed)
 - 📰 **News Feed:** Stay updated with the latest in anime, movies, and games via combined RSS feeds.
+
 ### 7. Live Radio
 - **How it works**: Fetches live broadcasts from the Famelack radio dataset.
 - **Background Player**: Specialized background audio player allows listening while browsing other sections.
 
 ---
 
----
-
-## 8. Setup & Usage
+## 🔁 Setup & Usage
 
 ### Prerequisites
 -   Python 3.8+
 -   Node.js 16+
 
-### 1. Backend
+### Running the Desktop Application
+
+The application is fully integrated. Launching the desktop shell will automatically start all background services, including the FastAPI backend (port `8000`) and the Node bridge scraper (port `3001`).
+
+```bash
+# 1. Install dependencies from the root directory
+npm install
+
+# 2. Run the desktop application in development mode
+npm run dev:desktop
+```
+
+---
+
+### Development Setup (Running Services Individually)
+
+If you are developing or testing parts of the stack separately, you can run them manually:
+
+#### 1. Start the Node Scrape Bridge
+```bash
+# From the root directory
+node node-bridge.js
+```
+*Runs the bridge server locally at: `http://localhost:3001`*
+
+#### 2. Start the FastAPI Backend
 ```bash
 cd backend
-pip install -r requirements.txt # or install manually: fastapi uvicorn httpx moviebox-api
-python -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+pip install -r requirements.txt
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
-*Documentation available at: [http://localhost:8080/docs](http://localhost:8080/docs)*
+*Runs the API server locally at: `http://localhost:8000` (Docs available at `http://localhost:8000/docs`)*
 
-### 2. Frontend
+#### 3. Start the Frontend Dev Server
 ```bash
 cd frontend
 npm install
-npm run dev -- --host
+npm run dev
 ```
-*Access application at: `http://localhost:5173`*
+*Runs the dev server locally at: `http://localhost:5173`*
+
+### 📦 Packaging & Building the Production App
+
+Follow these steps to compile the frontend, package the Python backend, and generate the final standalone `.exe` installer.
+
+#### 1. Compile the React Frontend
+Builds the static frontend assets into `dist-frontend/`:
+```bash
+npm run build:frontend
+```
+
+#### 2. Package the Python Backend
+Make sure you have PyInstaller and Python dependencies installed:
+```bash
+pip install -r backend/requirements.txt
+pip install pyinstaller
+```
+Compile the backend into a single executable:
+```bash
+pyinstaller --clean backend.spec
+```
+Copy the compiled binary into the builder resources directory:
+```bash
+# Create the directory if it doesn't exist
+mkdir dist-backend
+# Copy the compiled binary
+copy dist\backend.exe dist-backend\backend.exe
+```
+
+#### 3. Build the Electron Installer
+Generates the final standalone installer executable (`dist/GengaMovie.exe`):
+```bash
+npm run build:exe
+```
 
 ---
 
 ## ⚙️ Configuration & URLs
 
-### 1. External Service APIs (Backend)
-If you are running the backend locally and wish to change where it pulls data from (e.g., if a provider URL changes), update these files:
+### 1. API Ports & Configurations
+All scrapers and metadata aggregates communicate locally under the following base settings:
 
-| Service | Location | Variable | Current URL |
+| Service Provider | Port / Location | Mode | Connection Path |
 | :--- | :--- | :--- | :--- |
-| **Music (GaanaPy)** | `backend/music_service.py` | `self.base_url` | `https://gaanapy-a8jf.onrender.com` |
-| **Manga (Consumet)** | `backend/manga_service.py` | `BASE_URL` | `https://api-consumet-org-mswp.onrender.com` |
-| **News (ANN)** | `frontend/src/App.jsx` | - | `https://api-consumet-org-mswp.onrender.com` |
+| **FastAPI Backend** | `localhost:8000` | Core Router | Direct API endpoint |
+| **Node Scrape Bridge** | `localhost:3001` | Consumet Handler | Proxy endpoint from Backend (8000) to Bridge (3001) |
+| **Music (GaanaPy)** | `GaanaPy` library | Native Python integration | Resolved within [music_service.py](file:///d:/Music/iTunes/Downloads/GENGA-MOVIE-DESKTOP/backend/music_service.py) |
+| **Manga (MangaPill)** | `localhost:3001` | Express Scraping | Handled by local Node Bridge via [manga_service.py](file:///d:/Music/iTunes/Downloads/GENGA-MOVIE-DESKTOP/backend/manga_service.py) |
+| **News (ANN Feed)** | `localhost:3001` | Express RSS Reader | Proxied from FastAPI to Node Bridge via [api.py](file:///d:/Music/iTunes/Downloads/GENGA-MOVIE-DESKTOP/backend/api.py) |
 
-### 2. Cloud vs Local Routing (Frontend)
-The application uses a hybrid routing model defined in `frontend/src/App.jsx`.
-
-#### **The `CLOUD_BASE` URL**
-The variable `CLOUD_BASE` (currently `http://localhost:8000`) acts as a hosted instance of the Genga backend. This is used as a reliable fallback.
-
-#### **How to Replace the Cloud URL**
-If you want to use your own hosted backend instead of the default one:
-1. Open `frontend/src/App.jsx`.
-2. Locate the line: `const CLOUD_BASE = 'http://localhost:8000';`.
-3. Replace the string with your own server URL (make sure it doesn't end with a slash).
-
-#### **Source-Specific Routing Logic**
-In `App.jsx`, the variable `API_BASE` determines which backend the frontend talks to for a specific section:
-
-```javascript
-// App.jsx logic
-const API_BASE = (activeSource === 'anilist' || activeSource === 'manga' || activeSource === 'music' || activeSource === 'news')
-    ? CLOUD_BASE
-    : localServerURL;
-```
-
-- **Cloud-Routed (Anime, Music, Manga, News)**: These sections are hard-coded to use `CLOUD_BASE` or the direct API endpoint (for News). This ensures that even if you don't have the Python backend running locally, these specialized scrapers continue to function.
-- **Local-Routed (Home, Movies, CineCLI)**: These sections use your `localServerURL` (detected as `localhost:8080` by default). This is necessary for CineCLI (torrents) and direct movie proxies which rely on your local machine's network.
-
-### 3. How it Works (Data Flow)
+### 2. How it Works (Data Flow)
 1. **User Action**: You click on a Manga, Music, or News item.
-2. **Frontend Request**: Since the source is `manga`, the frontend sends the request to `http://localhost:8000/api/manga/...` (or directly to the News API).
-3. **Cloud Backend**: The hosted backend receives the request.
-4. **Provider Fetch**: The Cloud backend then talks to the actual provider (like Consumet or GaanaPy).
-5. **Data Return**: The data travels back to your browser.
+2. **Frontend Request**: The React SPA sends the request to the FastAPI server: `http://localhost:8000/api/...`
+3. **Local Backend Processing**: FastAPI receives the request and resolves it. For Manga or News queries, FastAPI makes a local background fetch to the Node Scraper Bridge running at `http://localhost:3001`.
+4. **Data Return**: The resolved payload travels back through port `8000` to your browser view.
 
-This path bypasses the need for you to host the complex scraping logic locally for these specific sources.
-
-
-## 🔁 Client-side Routing (Deep Links)
-
-The frontend is a single-page React application that uses React Router for navigation. By default the app is shipped with a hash-based router (`HashRouter`) so deep links work when hosting the built files on simple static servers or via preview services.
-
-Key routes
-- `/` — Home / Discover view
-- `/details/:id?source=<source>` — Item details modal (source defaults to `home`). Example: `/#/details/dispatches-from-elsewhere?source=home`
-- `/watch/:id?season=<n>&episode=<m>` — Watch page for a given item. Example: `/#/watch/some-id?episode=1`
-
-Notes
-- The watch page syncs the currently selected `season` and `episode` into the URL query string so you can copy/paste or bookmark an exact player state.
-- `HashRouter` is used intentionally for compatibility with static hosting. If you prefer clean URLs (no `#`), switch to `BrowserRouter` and configure your server to return `index.html` for unknown paths (SPA fallback).
-
-Testing deep links locally
-1. Run the frontend dev server:
-```bash
-cd frontend
-npm run dev
-```
-2. Open a deep-link in the browser (Vite dev server also serves hash routes):
-```text
-http://localhost:5173/#/watch/<ITEM_ID>?episode=1
-```
-
-Programmatic navigation
-- The app uses `useNavigate()` from `react-router-dom` for internal navigation and replaces history entries when updating episode/season so the back button remains intuitive.
-
+---
 
 This software is for educational and research purposes only. The developers of this project do not host, own, or upload any media content. The application acts solely as a client-side interface for existing third-party APIs. Users are responsible for ensuring their usage complies with all applicable local laws and regulations.
 

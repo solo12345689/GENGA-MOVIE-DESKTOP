@@ -1,7 +1,8 @@
 fastapi
 uvicorn
-moviebox-api
 pydantic
 requests
 httpx
 yt-dlp
+gaanapy
+throttlebuster

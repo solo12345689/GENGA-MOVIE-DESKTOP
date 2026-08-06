@@ -55,7 +55,7 @@ const Sidebar = ({ activeSource, onChangeSource, serverStatus, isOpen, onToggle 
                         }}>
                             GENGA
                         </h1>
-                        <p style={{ color: 'var(--accent-cyan)', fontSize: '0.7rem', marginTop: '2px',协议: '5px', textTransform: 'uppercase', fontWeight: 'bold' }}>MOVIES</p>
+                        <p style={{ color: 'var(--accent-cyan)', fontSize: '0.7rem', marginTop: '2px', letterSpacing: '5px', textTransform: 'uppercase', fontWeight: 'bold' }}>MOVIES</p>
                     </div>
                 )}
 
@@ -87,79 +87,82 @@ const Sidebar = ({ activeSource, onChangeSource, serverStatus, isOpen, onToggle 
 
             {/* Navigation */}
             <nav style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
-                {navItems.map(item => (
-                    <button
-                        key={item.id}
-                        onClick={() => onChangeSource(item.id)}
-                        title={!isOpen ? item.label : ''}
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: isOpen ? 'flex-start' : 'center',
-                            gap: '16px',
-                            padding: '14px 18px',
-                            background: activeSource === item.id ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
-                            border: '1px solid',
-                            borderColor: activeSource === item.id ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
-                            borderRadius: '16px',
-                            color: activeSource === item.id ? '#fff' : 'var(--text-muted)',
-                            cursor: 'pointer',
-                            transition: 'all 0.3s var(--ease-out)',
-                            textAlign: 'left',
-                            fontSize: '0.95rem',
-                            fontWeight: activeSource === item.id ? '600' : '500',
-                            width: '100%',
-                            position: 'relative',
-                            overflow: 'hidden'
-                        }}
-                        onMouseEnter={e => {
-                            if (activeSource !== item.id) {
-                                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-                                e.currentTarget.style.color = '#fff';
-                                e.currentTarget.style.transform = 'translateX(4px)';
-                            }
-                        }}
-                        onMouseLeave={e => {
-                            if (activeSource !== item.id) {
-                                e.currentTarget.style.background = 'transparent';
-                                e.currentTarget.style.color = 'var(--text-muted)';
-                                e.currentTarget.style.transform = 'translateX(0)';
-                            }
-                        }}
-                    >
-                        {/* THE ACTIVE INDICATOR GLOW */}
-                        {activeSource === item.id && (
-                            <div style={{
-                                position: 'absolute',
-                                left: 0,
-                                top: '20%',
-                                bottom: '20%',
-                                width: '4px',
-                                background: 'var(--primary)',
-                                borderRadius: '0 4px 4px 0',
-                                boxShadow: '0 0 15px var(--primary)'
-                            }} />
-                        )}
-
-                        <svg
-                            width="22"
-                            height="22"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke={activeSource === item.id ? 'var(--primary)' : 'currentColor'}
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            style={{ 
-                                transition: 'all 0.3s',
-                                filter: activeSource === item.id ? 'drop-shadow(0 0 5px var(--primary-glow))' : 'none'
+                {navItems.map(item => {
+                    const isActive = activeSource === item.id || (item.id === 'home' && activeSource === 'moviebox');
+                    return (
+                        <button
+                            key={item.id}
+                            onClick={() => onChangeSource(item.id)}
+                            title={!isOpen ? item.label : ''}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: isOpen ? 'flex-start' : 'center',
+                                gap: '16px',
+                                padding: '14px 18px',
+                                background: isActive ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                                border: '1px solid',
+                                borderColor: isActive ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
+                                borderRadius: '16px',
+                                color: isActive ? '#fff' : 'var(--text-muted)',
+                                cursor: 'pointer',
+                                transition: 'all 0.3s var(--ease-out)',
+                                textAlign: 'left',
+                                fontSize: '0.95rem',
+                                fontWeight: isActive ? '600' : '500',
+                                width: '100%',
+                                position: 'relative',
+                                overflow: 'hidden'
+                            }}
+                            onMouseEnter={e => {
+                                if (!isActive) {
+                                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                    e.currentTarget.style.color = '#fff';
+                                    e.currentTarget.style.transform = 'translateX(4px)';
+                                }
+                            }}
+                            onMouseLeave={e => {
+                                if (!isActive) {
+                                    e.currentTarget.style.background = 'transparent';
+                                    e.currentTarget.style.color = 'var(--text-muted)';
+                                    e.currentTarget.style.transform = 'translateX(0)';
+                                }
                             }}
                         >
-                            {item.icon}
-                        </svg>
-                        {isOpen && <span style={{ transition: 'opacity 0.3s', opacity: 1 }}>{item.label}</span>}
-                    </button>
-                ))}
+                            {/* THE ACTIVE INDICATOR GLOW */}
+                            {isActive && (
+                                <div style={{
+                                    position: 'absolute',
+                                    left: 0,
+                                    top: '20%',
+                                    bottom: '20%',
+                                    width: '4px',
+                                    background: 'var(--primary)',
+                                    borderRadius: '0 4px 4px 0',
+                                    boxShadow: '0 0 15px var(--primary)'
+                                }} />
+                            )}
+
+                            <svg
+                                width="22"
+                                height="22"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke={isActive ? 'var(--primary)' : 'currentColor'}
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                style={{ 
+                                    transition: 'all 0.3s',
+                                    filter: isActive ? 'drop-shadow(0 0 5px var(--primary-glow))' : 'none'
+                                }}
+                            >
+                                {item.icon}
+                            </svg>
+                            {isOpen && <span style={{ transition: 'opacity 0.3s', opacity: 1 }}>{item.label}</span>}
+                        </button>
+                    );
+                })}
             </nav>
 
             {/* Status Footer */}

@@ -1,6 +1,6 @@
 const { app, BrowserWindow, screen, session, utilityProcess, ipcMain, dialog } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 
 // [SINGLETON GUARD] Official Genga Movie Team Safety Lock
@@ -22,8 +22,13 @@ if (!gotTheLock) {
     async function isPortOpen(port) {
         const axios = require('axios');
         try {
-            await axios.get(`http://127.0.0.1:${port}/`, { timeout: 800 });
-            return true;
+            const res = await axios.get(`http://127.0.0.1:${port}/`, { timeout: 800 });
+            // Double-check if the response is from our MovieBox/Genga API backend
+            return res.data && (
+                res.data.message === "Welcome to MovieBox API" || 
+                res.data.status === "ok" || 
+                (typeof res.data === 'object' && JSON.stringify(res.data).includes('MovieBox'))
+            );
         } catch (e) {
             return false;
         }
@@ -49,6 +54,8 @@ if (!gotTheLock) {
         try {
             if (!isPackaged) {
                 nodeBridgeProcess = spawn('node', [bridgePath], { cwd: path.dirname(bridgePath), stdio: 'pipe' });
+                nodeBridgeProcess.stdout.pipe(logStream);
+                nodeBridgeProcess.stderr.pipe(logStream);
                 return;
             }
             nodeBridgeProcess = utilityProcess.fork(bridgePath, [], {
@@ -56,13 +63,15 @@ if (!gotTheLock) {
                 stdio: 'pipe',
                 env: { ...process.env, NODE_ENV: 'production' }
             });
+            nodeBridgeProcess.stdout.pipe(logStream);
+            nodeBridgeProcess.stderr.pipe(logStream);
         } catch (err) { log(`CRITICAL: ${err.message}`); }
     }
 
     function startBackend() {
         if (backendProcess && !backendProcess.killed) return;
         const isPackaged = app.isPackaged;
-        const backendDir = isPackaged ? path.join(process.resourcesPath, 'backend') : path.join(__dirname, '..', 'dist-backend');
+        const backendDir = isPackaged ? path.join(process.resourcesPath, 'backend') : path.join(__dirname, '..');
         const executablePath = isPackaged ? path.join(backendDir, 'backend.exe') : 'python';
         const finalArgs = isPackaged ? [] : ['run_backend.py'];
 
@@ -76,8 +85,12 @@ if (!gotTheLock) {
             cwd: backendDir,
             shell: false, 
             windowsHide: true,
+            stdio: 'pipe',
             env: { ...process.env, PYTHONNOUSERSITE: '1' }
         });
+
+        backendProcess.stdout.pipe(logStream);
+        backendProcess.stderr.pipe(logStream);
     }
 
     function createWindow() {
@@ -97,6 +110,11 @@ if (!gotTheLock) {
             icon: path.join(__dirname, '..', 'frontend', 'public', 'favicon.ico')
         });
 
+        mainWindow.webContents.setWindowOpenHandler((details) => {
+            console.log(`[POPUP BLOCKED] Denied popup window request to: ${details.url}`);
+            return { action: 'deny' };
+        });
+
         if (app.isPackaged) {
             mainWindow.loadFile(path.join(__dirname, '..', 'dist-frontend', 'index.html'));
         } else {
@@ -110,14 +128,27 @@ if (!gotTheLock) {
 
         // Start backend gracefully in background
         const taskkill = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
-        try { spawn(taskkill, ['/F', '/IM', 'backend.exe', '/T'], { shell: false }); } catch (e) {}
+        try {
+            // Use spawnSync to ensure the taskkill command fully finishes before we check the port
+            spawnSync(taskkill, ['/F', '/IM', 'backend.exe', '/T'], { windowsHide: true });
+        } catch (e) {}
         
+        // Wait for port to be free, then start backend
         setTimeout(async () => {
-            const alreadyRunning = await isPortOpen(8000);
-            if (!alreadyRunning) {
-                startBackend();
+            let attempts = 0;
+            let active = false;
+            while (attempts < 6) {
+                active = await isPortOpen(8000);
+                if (!active) break;
+                await new Promise(resolve => setTimeout(resolve, 200));
+                attempts++;
             }
-        }, 500); // Only small wait to let taskkill finish
+            if (!active) {
+                startBackend();
+            } else {
+                console.log("Port 8000 is still active after taskkill. Assuming external service or already running.");
+            }
+        }, 100);
         
         startNodeBridge();
 

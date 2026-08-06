@@ -1,12 +1,13 @@
 import subprocess
 import sys
+import os
 
 def run_server():
     print("Starting uvicorn wrapper...")
     with open("uvicorn_debug.log", "w") as f:
         process = subprocess.Popen(
             ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8080", "--timeout-keep-alive", "65"],
-            cwd="c:\\Users\\akshi\\.gemini\\antigravity\\scratch\\moviebox_web_app\\backend",
+            cwd=os.path.dirname(os.path.abspath(__file__)),
             stdout=f,
             stderr=subprocess.STDOUT,
             text=True

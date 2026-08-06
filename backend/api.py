@@ -547,49 +547,152 @@ async def get_tv_channels_by_country(code: str):
     channels = await tv_service.get_channels_by_country(code)
     return {"results": channels}
 
+ytdlp_update_checked = False
+
+def get_ytdlp_path():
+    import os
+    app_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser('~')), 'genga-movie')
+    os.makedirs(app_dir, exist_ok=True)
+    return os.path.join(app_dir, 'yt-dlp.exe')
+
+async def update_ytdlp_binary_background():
+    global ytdlp_update_checked
+    if ytdlp_update_checked:
+        return
+    ytdlp_update_checked = True
+    
+    def _download():
+        import os
+        import urllib.request
+        import json
+        
+        ytdlp_path = get_ytdlp_path()
+        try:
+            print("[AUTO-UPDATE] Checking for yt-dlp.exe updates from GitHub...")
+            req = urllib.request.Request(
+                "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+                headers={"User-Agent": "genga-movie-app"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                release_info = json.loads(response.read().decode())
+                
+            assets = release_info.get("assets", [])
+            download_url = None
+            for asset in assets:
+                if asset.get("name") == "yt-dlp.exe":
+                    download_url = asset.get("browser_download_url")
+                    break
+                    
+            if not download_url:
+                print("[AUTO-UPDATE] yt-dlp.exe not found in latest release assets.")
+                return
+
+            version_path = os.path.join(os.path.dirname(ytdlp_path), 'yt-dlp.version')
+            current_tag = ""
+            if os.path.exists(ytdlp_path) and os.path.exists(version_path):
+                try:
+                    with open(version_path, 'r') as f:
+                        current_tag = f.read().strip()
+                except:
+                    pass
+            
+            latest_tag = release_info.get("tag_name", "")
+            if os.path.exists(ytdlp_path) and current_tag == latest_tag:
+                print(f"[AUTO-UPDATE] yt-dlp.exe is already up-to-date (version {latest_tag}).")
+                return
+
+            print(f"[AUTO-UPDATE] Downloading yt-dlp.exe version {latest_tag} from {download_url}...")
+            temp_path = ytdlp_path + ".tmp"
+            with urllib.request.urlopen(download_url, timeout=60) as dl_resp:
+                with open(temp_path, "wb") as f:
+                    f.write(dl_resp.read())
+                    
+            if os.path.exists(ytdlp_path):
+                os.remove(ytdlp_path)
+            os.rename(temp_path, ytdlp_path)
+            
+            with open(version_path, 'w') as f:
+                f.write(latest_tag)
+                
+            print(f"[AUTO-UPDATE] yt-dlp.exe updated successfully to version {latest_tag}")
+            
+        except Exception as e:
+            print(f"[AUTO-UPDATE] Error checking/updating yt-dlp.exe: {e}")
+
+    await asyncio.to_thread(_download)
+
+async def get_yt_url_via_binary(url: str):
+    import os
+    ytdlp_path = get_ytdlp_path()
+    if not os.path.exists(ytdlp_path):
+        return None
+        
+    try:
+        print(f"[YT-DLP] Resolving via binary: {ytdlp_path}")
+        process = await asyncio.create_subprocess_exec(
+            ytdlp_path, "-f", "best", "-g", url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0:
+            resolved_url = stdout.decode().strip()
+            if resolved_url.startswith("http"):
+                return resolved_url
+        else:
+            print(f"[YT-DLP] Binary resolution failed (exit code {process.returncode}): {stderr.decode().strip()}")
+    except Exception as e:
+        print(f"[YT-DLP] Exception resolving via binary: {e}")
+        
+    return None
+
 @router.get("/tv/resolve-yt-v3/{yt_id}")
 async def resolve_youtube_hls(yt_id: str):
     """
-    Uses yt-dlp library to resolve a direct YouTube HLS (.m3u8) URL.
-    This replaces unstable third-party proxies and works without an external .exe.
+    Resolves YouTube HLS live stream using local standalone binary (updated from GitHub)
+    with a fallback to the python yt-dlp library.
     """
     try:
-        # Determine URL: 11 chars is a video ID, otherwise it's likely a channel ID for /live
+        # 1. Trigger background binary update check
+        asyncio.create_task(update_ytdlp_binary_background())
+
+        # Determine target YouTube URL
         if len(yt_id) == 11:
             url = f"https://www.youtube.com/watch?v={yt_id}"
         elif yt_id.startswith("UC") or yt_id.startswith("HC") or yt_id.startswith("I"):
             url = f"https://www.youtube.com/channel/{yt_id}/live"
         else:
-            # Fallback for other ID types (handle, etc)
             url = f"https://www.youtube.com/@{yt_id}/live" if not yt_id.startswith("http") else yt_id
             
-        print(f"[YT-DLP] Resolving URL via sync subprocess (threaded): {url}")
+        # 2. Try resolving via local standalone binary first
+        stream_url = await get_yt_url_via_binary(url)
         
-        def _get_yt_url():
-            import yt_dlp
-            ydl_opts = {
-                'format': 'best',
-                'quiet': True,
-                'no_warnings': True,
-                'nocheckcertificate': True,
-                'extract_flat': False
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                return info.get('url')
+        # 3. If binary failed or doesn't exist, fall back to bundled python module
+        if not stream_url:
+            print("[YT-DLP] Standalone binary unavailable or failed. Trying python library fallback...")
+            def _get_yt_url_library():
+                import yt_dlp
+                ydl_opts = {
+                    'format': 'best',
+                    'quiet': True,
+                    'no_warnings': True,
+                    'nocheckcertificate': True,
+                    'extract_flat': False
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    return info.get('url')
             
-        try:
-            # Offload the blocking network call to a separate thread
-            stream_url = await asyncio.to_thread(_get_yt_url)
-            
-            if stream_url and stream_url.startswith("http"):
-                print(f"[YT-DLP] Resolved: {stream_url[:50]}...")
-                return {"url": stream_url, "type": "hls" if ".m3u8" in stream_url else "mp4", "v": "3"}
-            else:
-                return {"error": f"Invalid or no URL returned.", "v": "3"}
-        except Exception as thread_e:
-            return {"error": f"Extraction error: {str(thread_e)}", "v": "3"}
+            try:
+                stream_url = await asyncio.to_thread(_get_yt_url_library)
+            except Exception as lib_e:
+                return {"error": f"Library fallback error: {str(lib_e)}", "v": "3"}
 
+        if stream_url and stream_url.startswith("http"):
+            print(f"[YT-DLP] Resolved successfully: {stream_url[:50]}...")
+            return {"url": stream_url, "type": "hls" if ".m3u8" in stream_url else "mp4", "v": "3"}
+        else:
+            return {"error": "Failed to resolve stream URL.", "v": "3"}
             
     except Exception as e:
         error_msg = str(e) or repr(e)
@@ -1687,11 +1790,9 @@ async def proxy_stream(request: Request, url: str, source: str = None):
 async def get_anime_home():
     try:
         trending = await AnilistService.get_trending(per_page=50)
-        top_100 = await AnilistService.get_top_100(per_page=100)
         
         return [
-            {"title": "Trending Now", "items": trending},
-            {"title": "Top 100 Anime", "items": top_100}
+            {"title": "Trending Now", "items": trending}
         ]
     except Exception as e:
         print(f"Anilist Home error: {e}")

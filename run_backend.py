@@ -28,7 +28,7 @@ def run():
         
         # Path setup
         backend_path = os.path.join(os.path.dirname(__file__), "backend")
-        sys.path.append(backend_path)
+        sys.path.insert(0, backend_path)
         log_panic(f"Backend path: {backend_path}")
         
         print(f"Starting backend on 127.0.0.1:8000...")

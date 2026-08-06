@@ -16,7 +16,7 @@ throttle_datas, throttle_binaries, throttle_hiddenimports = collect_all('throttl
 
 a = Analysis(
     ['run_backend.py'],
-    pathex=[],
+    pathex=['backend'],
     binaries=[] + fastapi_binaries + starlette_binaries + moviebox_binaries + ytdlp_binaries + httpx_binaries + aiohttp_binaries + gaana_binaries + throttle_binaries,
     datas=[
         ('backend', 'backend'),

@@ -606,7 +606,7 @@ const DetailsModal = ({ item, onClose, onDownload, onStream, progress, serverMod
                                                 {(item.tracks || item.songs).map((track, idx) => (
                                                     <div
                                                         key={track.id || idx}
-                                                        onClick={() => onStream(track)}
+                                                        onClick={() => onStream(track, null, null, item.tracks || item.songs)}
                                                         className="track-item"
                                                         style={{
                                                             display: 'flex',
