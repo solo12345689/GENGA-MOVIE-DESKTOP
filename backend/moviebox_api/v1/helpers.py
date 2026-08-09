@@ -19,7 +19,7 @@ FILE_EXT_PATTERN = re.compile(r".+\.(\w+)\?.+")
 ILLEGAL_CHARACTERS_PATTERN = re.compile(r"[^\w\-_\.\s()&|]")
 
 VALID_ITEM_PAGE_URL_PATTERN = re.compile(
-    r"^.*" + ITEM_DETAILS_PATH + r"/[\w-]+(?:\?id\=\d{17,}.*)?$"
+    r"^.*" + ITEM_DETAILS_PATH + r"/[\w-]+(?:\?id\=[\w\-]+.*)?$"
 )
 
 SCHEME_HOST_PATTERN = re.compile(r"^https?://[-_\.\w]+$")

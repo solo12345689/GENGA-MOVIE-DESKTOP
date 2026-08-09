@@ -96,14 +96,15 @@ DEFAULT_HEADERS = {
 }
 
 # Global session - initialized with custom headers to ensure consistency across library and player
-session = Session(headers=DEFAULT_HEADERS)
+session = Session(headers=DEFAULT_HEADERS, timeout=httpx.Timeout(60.0, connect=15.0))
 _global_http_async_client = None
 
 def get_http_client() -> httpx.AsyncClient:
     global _global_http_async_client
     if _global_http_async_client is None:
         _global_http_async_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(60.0, connect=10.0),
+            verify=False,
+            timeout=httpx.Timeout(60.0, connect=15.0),
             follow_redirects=True,
             limits=httpx.Limits(max_connections=500, max_keepalive_connections=50),
             headers=DEFAULT_HEADERS
@@ -1618,7 +1619,7 @@ async def moviebox_download(
 async def proxy_stream(request: Request, url: str, source: str = None):
     """
     Proxies a stream URL through the backend in a single pass.
-    Bypasses 403s and supports range requests via browser headers.
+    Bypasses 403s, supports range requests, rewrites M3U8s, and converts SRT to VTT.
     """
     # Cycle through headers until success
     candidates = get_source_headers(url, source)
@@ -1626,9 +1627,7 @@ async def proxy_stream(request: Request, url: str, source: str = None):
     # Forward Range from browser
     client_range = request.headers.get('range')
     
-    # User Request: Fix Format Error (Client closing too early)
-    # We must NOT use 'async with' because StreamingResponse needs the client open!
-    client = httpx.AsyncClient(verify=False, follow_redirects=True)
+    client = get_http_client()
     
     try:
         last_error = None
@@ -1679,9 +1678,6 @@ async def proxy_stream(request: Request, url: str, source: str = None):
                     
                     rewritten_content = "\n".join(new_lines)
                     
-                    # Close client since we are done
-                    await client.aclose()
-                    
                     return Response(
                         content=rewritten_content,
                         media_type="application/vnd.apple.mpegurl",
@@ -1700,6 +1696,51 @@ async def proxy_stream(request: Request, url: str, source: str = None):
                     req = client.build_request("GET", url, headers=headers)
                     resp = await client.send(req, stream=True, follow_redirects=True)
                 
+                # Check if Content-Type indicates M3U8 even if extension didn't (Second Chance)
+                ct = resp.headers.get("Content-Type", "").lower()
+                if not is_srt and ("mpegurl" in ct or "m3u8" in ct):
+                    # It IS M3U8, but we started streaming it.
+                    content = await resp.read() # Read all
+                    await resp.aclose() # Close stream
+                    
+                    text = content.decode('utf-8', errors='ignore')
+                    base_url = str(resp.url).rsplit('/', 1)[0]
+                    lines = text.splitlines()
+                    new_lines = []
+                    proxy_base = f"{request.url.scheme}://{request.url.netloc}/api/proxy-stream"
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            new_lines.append(line)
+                            continue
+                        if line.startswith("#"):
+                            if "URI=" in line:
+                                import re
+                                def wrap_uri(match):
+                                    uri = match.group(2)
+                                    if not uri.startswith("http"):
+                                        uri = f"{base_url}/{uri}"
+                                    return f'{match.group(1)}="{proxy_base}?url={quote(uri)}&source={source or ""}"'
+                                line = re.sub(r'(URI)=["\']([^"\']+)["\']', wrap_uri, line)
+                            new_lines.append(line)
+                        else:
+                            target_url = line
+                            if not target_url.startswith("http"):
+                                target_url = f"{base_url}/{target_url}"
+                            proxied_url = f"{proxy_base}?url={quote(target_url)}&source={source or ''}"
+                            new_lines.append(proxied_url)
+                            
+                    rewritten_content = "\n".join(new_lines)
+                    return Response(
+                        content=rewritten_content,
+                        media_type="application/vnd.apple.mpegurl",
+                        headers={
+                            "Access-Control-Allow-Origin": "*",
+                            "X-Proxy-Status": "Rewritten-M3U8-CT"
+                        }
+                    )
+
                 if resp.status_code >= 400:
                     await resp.aclose()
                     last_error = f"Source returned {resp.status_code}"
@@ -1708,7 +1749,7 @@ async def proxy_stream(request: Request, url: str, source: str = None):
                 # Success!
                 
                 # Intercept SRT for conversion to VTT (Browsers don't support SRT natively in tracks)
-                is_srt = ".srt" in url.lower() or "application/x-subrip" in resp.headers.get("Content-Type", "").lower()
+                is_srt = is_srt or "application/x-subrip" in resp.headers.get("Content-Type", "").lower()
                 
                 if is_srt:
                     try:
@@ -1721,7 +1762,6 @@ async def proxy_stream(request: Request, url: str, source: str = None):
                         
                         vtt_text = srt_to_vtt(text)
                         await resp.aclose()
-                        await client.aclose()
                         
                         print(f"[SUBTITLE] Successfully converted {url[:50]} to VTT")
                         return Response(
@@ -1735,7 +1775,6 @@ async def proxy_stream(request: Request, url: str, source: str = None):
                     except Exception as sub_e:
                         print(f"[SUBTITLE ERROR] Conversion failed: {sub_e}")
                         traceback.print_exc()
-                        # Fallback: if conversion fails, return raw if possible or raise
                         raise HTTPException(status_code=500, detail=f"Subtitle conversion error: {str(sub_e)}")
                 
                 excluded_headers = ["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "content-disposition"]
@@ -1752,7 +1791,6 @@ async def proxy_stream(request: Request, url: str, source: str = None):
                 
                 async def cleanup():
                     await resp.aclose()
-                    await client.aclose()
 
                 return StreamingResponse(
                     resp.aiter_raw(),
@@ -1766,18 +1804,11 @@ async def proxy_stream(request: Request, url: str, source: str = None):
                 last_error = str(e)
                 continue
                 
-        # If we exit loop without returning
-        await client.aclose()
         raise HTTPException(status_code=502, detail=f"Proxy failed: {last_error or 'Unknown error'}")
 
     except HTTPException:
-        # Re-raise HTTPExceptions as-is to preserve status codes (avoid 500)
         raise
     except Exception as e:
-        # Fallback closure for actual crashes
-        if 'client' in locals():
-            try: await client.aclose()
-            except: pass
         print(f"[PROXY FATAL] {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -1798,12 +1829,6 @@ async def get_anime_home():
         print(f"Anilist Home error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/anime/top-100")
-async def get_anime_top_100(page: int = 1):
-    try:
-        return await AnilistService.get_top_100(page=page)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/anime/search")
 async def search_anime(query: str, page: int = 1):
@@ -2146,191 +2171,7 @@ async def iframe_proxy(url: str, request: Request):
         return Response(content=f"Proxy Error: {e}", status_code=500)
 
 
-@router.get("/proxy-stream")
-async def proxy_stream(request: Request, url: str, source: str = None):
-    """
-    Proxies a stream URL through the backend in a single pass.
-    Bypasses 403s and supports range requests via browser headers.
-    """
-    # Cycle through headers until success
-    candidates = get_source_headers(url, source)
-    
-    # Forward Range from browser
-    client_range = request.headers.get('range')
-    
-    # Use the global persistent client to benefit from connection pooling and reuse TLS handshakes
-    client = get_http_client()
-    
-    try:
-        last_error = None
-        for headers in candidates:
-            if client_range:
-                headers['Range'] = client_range
-
-            try:
-                # Check if this is an HLS request
-                # Combine robust checks: URL extension OR Content-Type (from previous check, but here we check URL first optimization)
-                is_m3u8 = url.split("?")[0].endswith(".m3u8")
-                
-                if is_m3u8:
-                    # For playlists, we download and REWRITE absolute URLs to proxy through US
-                    resp = await client.get(url, headers=headers, follow_redirects=True, timeout=15.0)
-                    if resp.status_code != 200:
-                        last_error = f"Source returned {resp.status_code}"
-                        continue
-                    
-                    content = resp.text
-                    base_url = str(resp.url).rsplit('/', 1)[0]
-                    lines = content.splitlines()
-                    new_lines = []
-                    
-                    # Use the endpoint that this function is mounted on
-                    proxy_base = f"{request.url.scheme}://{request.url.netloc}/api/proxy-stream"
-                    
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            new_lines.append(line)
-                            continue
-                        
-                        if line.startswith("#"):
-                            if "URI=" in line:
-                                import re
-                                def wrap_uri(match):
-                                    uri = match.group(2)
-                                    if not uri.startswith("http"):
-                                        uri = f"{base_url}/{uri}"
-                                    return f'{match.group(1)}="{proxy_base}?url={quote(uri)}&source={source or ""}"'
-                                line = re.sub(r'(URI)=["\']([^"\']+)["\']', wrap_uri, line)
-                            new_lines.append(line)
-                        else:
-                            target_url = line
-                            if not target_url.startswith("http"):
-                                target_url = f"{base_url}/{target_url}"
-                            proxied_url = f"{proxy_base}?url={quote(target_url)}&source={source or ''}"
-                            new_lines.append(proxied_url)
-                    
-                    rewritten_content = "\n".join(new_lines)
-                    
-                    # No need to close the global client
-
-                    
-                    return Response(
-                        content=rewritten_content,
-                        media_type="application/vnd.apple.mpegurl",
-                        headers={
-                            "Access-Control-Allow-Origin": "*",
-                            "X-Proxy-Status": "Rewritten-M3U8"
-                        }
-                    )
-
-                # Not M3U8 -> Standard Proxy
-                is_srt = ".srt" in url.lower()
-                if is_srt:
-                    # Use regular GET for subtitles (worked in standalone test)
-                    resp = await client.get(url, headers=headers, follow_redirects=True, timeout=15.0)
-                else:
-                    req = client.build_request("GET", url, headers=headers)
-                    resp = await client.send(req, stream=True, follow_redirects=True)
-                
-                # Check if Content-Type indicates M3U8 even if extension didn't (Second Chance)
-                ct = resp.headers.get("Content-Type", "").lower()
-                if "mpegurl" in ct or "m3u8" in ct:
-                    # It IS M3U8, but we started streaming it.
-                    # We need to read it and rewrite.
-                    content = await resp.read() # Read all
-                    await resp.aclose() # Close stream
-                    
-                    text = content.decode('utf-8', errors='ignore')
-                    base_url = str(resp.url).rsplit('/', 1)[0]
-                    lines = text.splitlines()
-                    new_lines = []
-                    proxy_base = f"{request.url.scheme}://{request.url.netloc}/api/proxy-stream"
-                    
-                    import re
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            new_lines.append(line)
-                            continue
-                        if line.startswith("#"):
-                            if "URI=" in line:
-                                def wrap_uri(match):
-                                    uri = match.group(2)
-                                    if not uri.startswith("http"):
-                                        uri = f"{base_url}/{uri}"
-                                    return f'{match.group(1)}="{proxy_base}?url={quote(uri)}&source={source or ""}"'
-                                line = re.sub(r'(URI)=["\']([^"\']+)["\']', wrap_uri, line)
-                            new_lines.append(line)
-                        else:
-                            target_url = line
-                            if not target_url.startswith("http"):
-                                target_url = f"{base_url}/{target_url}"
-                            proxied_url = f"{proxy_base}?url={quote(target_url)}&source={source or ''}"
-                            new_lines.append(proxied_url)
-                            
-                    rewritten_content = "\n".join(new_lines)
-                    # No need to close the global client
-
-                    
-                    return Response(
-                        content=rewritten_content,
-                        media_type="application/vnd.apple.mpegurl",
-                        headers={
-                            "Access-Control-Allow-Origin": "*",
-                            "X-Proxy-Status": "Rewritten-M3U8-CT"
-                        }
-                    )
-                
-                if resp.status_code >= 400:
-                    print(f"[PROXY ERROR] {resp.status_code} for {url[:50]}")
-                    await resp.aclose()
-                    last_error = f"Source returned {resp.status_code}"
-                    continue
-                
-                # Success!
-                excluded_headers = ["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "content-disposition"]
-                res_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_headers}
-                res_headers.update({
-                    "Access-Control-Allow-Origin": "*",
-                    "Connection": "keep-alive",
-                    "X-Proxy-Status": "One-Shot"
-                })
-                if "Content-Length" in resp.headers:
-                    res_headers["Content-Length"] = resp.headers["Content-Length"]
-
-                from starlette.background import BackgroundTask
-                
-                async def cleanup():
-                    await resp.aclose()
-                    # Global client is NOT closed here
-
-
-                return StreamingResponse(
-                    resp.aiter_raw(),
-                    status_code=resp.status_code,
-                    headers=res_headers,
-                    background=BackgroundTask(cleanup)
-                )
-
-            except Exception as e:
-                print(f"[PROXY ATTEMPT FAILED] {e} for {url[:50]}")
-                last_error = str(e)
-                continue
-                
-        # If we exit loop without returning
-        # No need to close the global client
-
-        raise HTTPException(status_code=502, detail=f"Proxy failed: {last_error}")
-
-    except Exception as e:
-        # Fallback closure
-        # No need to close the global client
-
-        print(f"[PROXY FATAL] {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+# Note: Duplicate proxy_stream endpoint was removed.
 
 @router.get("/proxy/download")
 async def proxy_download(url: str, filename: str = "download.mp4"):
