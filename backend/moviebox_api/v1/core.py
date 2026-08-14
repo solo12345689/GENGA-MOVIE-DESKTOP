@@ -140,7 +140,7 @@ class Search(BaseSearch):
     """Performs a search of movies, tv series, music or all"""
 
     # _url = get_absolute_url(r"/wefeed-h5-bff/web/subject/search")
-    _url = "https://h5-api.aoneroom.com/wefeed-h5api-bff/subject/search"
+    _url = get_absolute_url(r"/wefeed-h5api-bff/subject/search")
 
     def __init__(
         self,

@@ -31,8 +31,8 @@ class Session:
         r"/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox"
     )
 
-    _user_info_endpoint = (
-        "https://h5-api.aoneroom.com/wefeed-h5api-bff/subject/search-suggest"
+    _user_info_endpoint = get_absolute_url(
+        r"/wefeed-h5api-bff/subject/search-suggest"
     )
     """Search suggestion responses are attached with auth bearer value as both 
     cookie and custom headers"""
@@ -65,11 +65,13 @@ class Session:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            verify=False,
             **httpx_kwargs,
         )
 
         self.moviebox_app_info: MovieboxAppInfo | None = None
         self.user_info: UserInfo | None = None
+        self.auth_token: str | None = None
         self.__moviebox_app_info_fetched: bool = False
         """Used to track cookies assignment status"""
 
@@ -101,6 +103,7 @@ class Session:
             cookies=self._cookies,
             proxy=self._proxy,
             timeout=self._timeout,
+            verify=False,
             **kwargs,
         )
         response = await client.get(url, params=params)
@@ -131,6 +134,11 @@ class Session:
         """
         await self.ensure_cookies_are_assigned()
 
+        if "/wefeed-" in url and self.auth_token:
+            headers = kwargs.get("headers") or {}
+            headers["Authorization"] = self.auth_token
+            kwargs["headers"] = headers
+
         response = await self._client.get(url, params=params, **kwargs)
         response.raise_for_status()
 
@@ -158,6 +166,11 @@ class Session:
             Response: Httpx response object
         """
         await self.ensure_cookies_are_assigned()
+
+        if "/wefeed-" in url and self.auth_token:
+            headers = kwargs.get("headers") or {}
+            headers["Authorization"] = self.auth_token
+            kwargs["headers"] = headers
 
         response = await self._client.post(url, json=json, **kwargs)
         response.raise_for_status()
@@ -229,10 +242,7 @@ class Session:
             )
 
         self.user_info = UserInfo(**json.loads(user_info))
-
-        new_auth = {"Authorization": f"Bearer {self.user_info.token}"}
-
-        self._client.headers.update(new_auth)
+        self.auth_token = f"Bearer {self.user_info.token}"
 
         return self.user_info
 

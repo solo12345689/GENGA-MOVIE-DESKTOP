@@ -242,12 +242,12 @@ class ResDataModel(BaseModel):
 
     metadata: MetadataModel
     postList: PostListModel
-    pubParam: PubParamModel
-    referer: HttpUrl
+    pubParam: PubParamModel | None = None
+    referer: HttpUrl | None = None
     resource: ResourceModel
     stars: list[StarsModel]
     subject: SubjectModel
-    url: HttpUrl
+    url: HttpUrl | None = None
 
     @field_validator("url", mode="before")
     def validate_url(value: str) -> str:
@@ -257,7 +257,7 @@ class ResDataModel(BaseModel):
 class ItemJsonDetailsModel(BaseModel):
     """Whole extracted item details from json-formatted data"""
 
-    nuxt_i18n_meta: dict = Field(alias="nuxt-i18n-meta")
+    nuxt_i18n_meta: dict | None = Field(default=None, alias="nuxt-i18n-meta")
     resData: ResDataModel
     utmSource: str
     showNotFound: bool
@@ -265,6 +265,6 @@ class ItemJsonDetailsModel(BaseModel):
     midReviewsList: list[PostListItemModel]
     pcShowSliderNav: bool
     detailShowSliderNav: bool
-    QRCode: str
+    QRCode: str | None = None
     activeSidebar: str
     playSourceTabType: int

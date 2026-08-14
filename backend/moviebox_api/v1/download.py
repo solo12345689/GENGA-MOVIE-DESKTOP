@@ -141,7 +141,7 @@ class BaseDownloadableFilesDetail(BaseContentProviderAndHelper):
         """
         # Referer
         request_header = {
-            "Referer": get_absolute_url(f"/movies/{self._item.detailPath}")
+            "Referer": f"https://netfilm.world/movies/{self._item.detailPath}"
         }
         # Without the referer, empty response will be served.
 

@@ -7,7 +7,6 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 fastapi_datas, fastapi_binaries, fastapi_hiddenimports = collect_all('fastapi')
 starlette_datas, starlette_binaries, starlette_hiddenimports = collect_all('starlette')
-moviebox_datas, moviebox_binaries, moviebox_hiddenimports = collect_all('moviebox_api')
 ytdlp_datas, ytdlp_binaries, ytdlp_hiddenimports = collect_all('yt_dlp')
 httpx_datas, httpx_binaries, httpx_hiddenimports = collect_all('httpx')
 aiohttp_datas, aiohttp_binaries, aiohttp_hiddenimports = collect_all('aiohttp')
@@ -17,10 +16,10 @@ throttle_datas, throttle_binaries, throttle_hiddenimports = collect_all('throttl
 a = Analysis(
     ['run_backend.py'],
     pathex=['backend'],
-    binaries=[] + fastapi_binaries + starlette_binaries + moviebox_binaries + ytdlp_binaries + httpx_binaries + aiohttp_binaries + gaana_binaries + throttle_binaries,
+    binaries=[] + fastapi_binaries + starlette_binaries + ytdlp_binaries + httpx_binaries + aiohttp_binaries + gaana_binaries + throttle_binaries,
     datas=[
         ('backend', 'backend'),
-    ] + fastapi_datas + starlette_datas + moviebox_datas + ytdlp_datas + httpx_datas + aiohttp_datas + gaana_datas + throttle_datas,
+    ] + fastapi_datas + starlette_datas + ytdlp_datas + httpx_datas + aiohttp_datas + gaana_datas + throttle_datas,
     hiddenimports=[
         'uvicorn',
         'uvicorn.protocols',
@@ -45,7 +44,7 @@ a = Analysis(
         'aiohttp',
         'yt_dlp',
         'yt_dlp.extractor',
-    ] + fastapi_hiddenimports + starlette_hiddenimports + moviebox_hiddenimports + ytdlp_hiddenimports + httpx_hiddenimports + aiohttp_hiddenimports + gaana_hiddenimports + throttle_hiddenimports,
+    ] + fastapi_hiddenimports + starlette_hiddenimports + ytdlp_hiddenimports + httpx_hiddenimports + aiohttp_hiddenimports + gaana_hiddenimports + throttle_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
